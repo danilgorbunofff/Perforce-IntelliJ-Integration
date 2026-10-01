@@ -21,6 +21,7 @@
 | [7](#7-day-0-gate--2-hours-before-any-code) | Day-0 gate — 2 hours, before any code |
 | [8](#8-the-21-day-plan) | The 21-day plan |
 | [9](#9-economics) | Economics |
+| [9.5](#95-what-it-costs-to-run--and-what-you-do-not-host) | What it costs to run — and what you do not host |
 | [10](#10-risks-and-open-questions) | Risks and open questions |
 | [11](#11-how-to-resume) | How to resume |
 | [A](#appendix-a--api-recipes) | Appendix A — API recipes |
@@ -458,6 +459,71 @@ Using 2026's two winners as the ceiling and the 2026 median as the floor:
 
 Say this out loud: **this is a lottery ticket with a very good ticket printer.** What is de-risked is the **channel** and the **product shape** — both are unusually well evidenced. What cannot be de-risked is **you**. Which is exactly why the first plugin is an **instrument to measure conversion**, not a bet-the-year attempt.
 
+### 9.5 What it costs to run — and what you do not host
+
+**Short answer: you host nothing, and the recurring infrastructure cost is €0.**
+
+#### You host nothing
+
+A JetBrains plugin is one signed JAR. JetBrains stores it, delivers it, and pushes updates to users. There is no backend, no database, no login system, no payment integration and no licence server to build or rent.
+
+Licensing is JetBrains-side as well. From the official docs on adding licence checks: *"all communication with the JetBrains Marketplace licensing infrastructure takes place on the IntelliJ Platform side."* The IDE talks to JetBrains, and your code only verifies the returned data against JetBrains' public certificate.
+
+**That last sentence is the entire reason this product class suits one person.** Compare it with almost any other software business, where hosting is the second cost after your time.
+
+#### The running costs
+
+| Item | Cost | Who provides it |
+|---|---|---|
+| Listing the plugin | **$0** — *"We don't charge any additional fees pertaining to developing extensions or listing them on JetBrains Marketplace."* | JetBrains |
+| Artifact hosting & delivery | **$0** (upload cap 400 MB — a VCS plugin is a few MB) | JetBrains |
+| Checkout, VAT, invoicing, refunds | **$0** | JetBrains |
+| Issuing & validating licences | **$0** | JetBrains |
+| Code signing | **$0** — you generate an OpenSSL cert once; Gradle `signPlugin` signs automatically before publish | you, once |
+| Test Perforce server | **$0** — self-hosted, 5 users / 20 workspaces, **no storage limit**, no end date | you, locally |
+| Test IDE | **$0** — see below | — |
+
+**Total recurring infrastructure cost: €0.**
+
+#### The test environment is free — this closes risk #5
+
+`P4D` runs on your own machine. The free tier is self-hosted and covers **5 users / 20 workspaces with no storage cap**, so one developer testing one plugin is far inside it. No server to rent, no cloud account.
+
+The only real spend is **local disk** if you want to reproduce the "incredibly slow for big P4 workspaces" complaint at realistic scale. Generating a synthetic depot locally costs nothing but disk. If you would rather not fill your own drive:
+
+| Option | Price | Note |
+|---|---|---|
+| Local NVMe | one-off ~€60–80 for 1–2 TB | simplest; recommended |
+| DigitalOcean block storage | **$0.10/GiB/month** | 100 GB ≈ $10/mo |
+| Oracle Cloud *Always Free* | **$0** | 200 GB block volume; idle instances may be reclaimed |
+
+You do **not** need any of the cloud options to start.
+
+#### You probably do not need a paid IDE
+
+`compatible-products` for the incumbent `Perforce P4` (id `69`) returns `IDEA` and **not** `IDEA_PRO` / `IDEA_ULTIMATE` — and lists the whole free-and-paid product family (Android Studio, CLion, PyCharm, Rider …). The free rival `p4ic4idea` (id `7685`) returns the identical list. So the free IDEA distribution is enough to install the incumbent and test against its UI.
+
+What this does **not** settle: whether the bundled Perforce *feature* is gated by an Ultimate **entitlement** rather than by availability. That is still gate question 1, and it takes two minutes.
+
+This also **improves** the Day-0 gate. The decisive question was "is it bundled?" — the compatibility data says it is at least *installable* in the free IDE, which means the 13.4M downloads are not simply an Ultimate entitlement being auto-counted.
+
+#### The one number that is not zero: your time
+
+| Ongoing task | Frequency | Effort |
+|---|---|---|
+| Rebuild + verify against a new IDE | **3× per year** (2026.1 → 2026.2 → 2026.3) | Gradle `verifyPlugin` detects breakage automatically — expect days, not weeks |
+| Marketplace review of each update | every release | **2–4 business days** before it goes live — plan around it |
+| User support | ad hoc | GitHub Issues — free |
+
+JetBrains ships **three majors a year** and states plainly that *"The API of IntelliJ Platform and bundled plugins may change between releases."* That is the actual maintenance cost of this business: a few days, three times a year.
+
+#### Cashflow, which is not the same as cost
+
+- **Commission 15%** of each sale. The documented ceiling is 25%, changeable on one month's notice.
+- **Payout minimum $200 / €200**, monthly, up to 30 days after month end; forced annual payout on 31 December. **At $19/yr that is about 12 sales before you receive any money.**
+- **Trader status declaration is mandatory** before a paid release (EU Omnibus Directive) and requires tax + banking data. Not a fee — an obligation.
+- **Unresolved:** no official page states whether the *Verified vendor* badge is required in order to charge. The badge page is phrased as opt-in (*"If you want your Vendor to be marked as 'Verified'"*), but the Marketplace Developer Agreement — the document that would settle it — is a client-rendered page that could not be read. All that is confirmed is that the **trader status** declaration is required.
+
 ---
 
 ## 10. Risks and open questions
@@ -470,7 +536,7 @@ Be honest about these. They are ranked by how much they could change the decisio
 | 2 | **Conversion rate is unmeasurable from outside.** The entire business case rests on one number that only shipping can produce. | ⚠️ **Permanently unverifiable in advance.** Accepted risk. |
 | 3 | **7 votes is thin evidence of scale.** It proves the pain has not been fixed since 2014. It does **not** prove the pain is widespread. | ✅ Understood. Mitigated by the 10 interviews in the gate, not by more API data. |
 | 4 | **A mature free rival exists** (`Perforce IDEA Community Integration`, `groboclown/p4ic4idea`, 56,989 DL, years of development). | ✅ Also the *best* evidence — see [5.3](#53-the-controlled-ab). Must be beaten on reliability and speed, not on features. |
-| 5 | **No Perforce server for testing.** This is a real practical blocker: developing the plugin needs a working Helix Core instance with a nontrivial workspace. | 🔧 Unresolved. Perforce offers a free tier for small teams (up to 5 users / 20 workspaces) — **confirm this before Day 1.** |
+| 5 | ~~**No Perforce server for testing.**~~ | ✅ **Closed.** Free `P4D` is self-hosted, 5 users / 20 workspaces, **no storage cap** — a solo dev sits far inside it. Remaining cost is local disk only. See [9.5](#95-what-it-costs-to-run--and-what-you-do-not-host). |
 | 6 | **Revenue is skewed, not steady.** The distribution in [9.2](#92-the-market-distribution) is long-tailed; most paid plugins earn almost nothing. | ⚠️ Accepted. See [9.4](#94-the-honest-range). |
 | 7 | **JetBrains could fix their own plugin**, or bundle a rewrite via an acqui-hire. | ⚠️ Low likelihood — they have not in twelve years, and Perforce-using IDE customers are a minority of their base. |
 
@@ -488,8 +554,8 @@ Be honest about these. They are ranked by how much they could change the decisio
 ### The immediate checklist
 
 - [ ] **Run the Day-0 gate.** It is 2 hours and it can kill the project. That is a feature.
-- [ ] Confirm the free Perforce server tier covers development (risk #5) — **do this before anything else, it is a hard blocker.**
-- [ ] Answer [risk #1](#10-risks-and-open-questions): bundled or not? One IDE install answers it.
+- [x] ✅ **Free Perforce server tier confirmed** — risk #5 closed. Install `P4D` locally; nothing to rent. See [9.5](#95-what-it-costs-to-run--and-what-you-do-not-host).
+- [ ] Answer [risk #1](#10-risks-and-open-questions) — **narrowed but not closed.** `compatible-products` says the incumbent installs into the free `IDEA`, so the question is now specifically: is the Perforce *feature* gated by an Ultimate **entitlement**? One IDE install answers it.
 - [ ] Find 10 real Perforce users; ask the one question.
 - [ ] Only then: `p4` CLI bridge + changelist tree, 3-day timebox.
 
@@ -500,13 +566,17 @@ Be honest about these. They are ranked by how much they could change the decisio
 - **Never re-open the seven killed candidates in [3.4](#34-what-was-killed-first--7-candidates)** without new data. They were killed by evidence, not by taste.
 - **TeamCity is not the fallback.** [3.3](#33-the-full-field), last line.
 - The name is `Perforce IntelliJ Integration`. Do not get creative later; [§6](#6-naming--listing-decided) explains why, and the reasoning is measured, not aesthetic.
+- **Do not rent a server.** There is nothing to host. If you find yourself pricing cloud infrastructure, you have misread the architecture — re-read [9.5](#95-what-it-costs-to-run--and-what-you-do-not-host).
 
 ### Still genuinely unknown
 
-1. Whether the incumbent is bundled (gate question 1).
-2. Trial → paid conversion (unmeasurable in advance).
+1. Whether the incumbent is bundled. **Narrowed:** `compatible-products` for id `69` includes free `IDEA` and excludes `IDEA_PRO`, so it is installable without Ultimate — but whether the Perforce *feature* is entitlement-gated is still open. Gate question 1.
+2. Trial → paid conversion (unmeasurable in advance — this has not changed and will not).
 3. How widespread the complaints are, as opposed to how long-standing.
-4. Whether JetBrains' `verified vendor` status is required to charge. **Not yet checked.** Confirm before Day 14.
+4. Whether JetBrains' `verified vendor` badge is required to charge. **Partially checked:** the badge page reads as opt-in, but the Developer Agreement is unreadable (client-rendered). The **trader status** declaration is confirmed mandatory. Confirm the badge question before Day 14.
+5. **Whether the free Perforce tier's licence terms expressly permit commercial product development around it.** The free-tier pages never use the word "commercial", and the Perforce licence PDFs read do not contain the 5-user/20-workspace terms at all. Low practical risk, but it was not *read* anywhere — treat as unread rather than as cleared.
+
+Infrastructure is no longer on this list. Hosting is €0 and confirmed; see [9.5](#95-what-it-costs-to-run--and-what-you-do-not-host).
 
 ---
 
@@ -654,7 +724,15 @@ Three of that author's own published retractions are worth noting, because they 
 2. An apparent "vendor portfolio effect" turned out to be age.
 3. A comparison against the Atlassian Marketplace floor was a unit mismatch.
 
-**JetBrains commercial terms** are from JetBrains' own published vendor documentation (15% / 85%, $200 minimum payout, annual payment).
+**JetBrains commercial terms** — the 15% commission, the documented 25% ceiling, the free listing, the $200/€200 payout minimum and the forced annual payout — are from JetBrains' own vendor documentation: [`revenue-sharing-and-fees`](https://plugins.jetbrains.com/docs/marketplace/revenue-sharing-and-fees.html), [`getting-paid`](https://plugins.jetbrains.com/docs/marketplace/getting-paid.html), [`payment-processing`](https://plugins.jetbrains.com/docs/marketplace/payment-processing.html), [`trader-status`](https://plugins.jetbrains.com/docs/marketplace/trader-status.html), [`verified-vendor-badge`](https://plugins.jetbrains.com/docs/marketplace/verified-vendor-badge.html), [`plugin-signing`](https://plugins.jetbrains.com/docs/intellij/plugin-signing.html).
+
+**The architecture claim in [9.5](#95-what-it-costs-to-run--and-what-you-do-not-host)** — that there is no vendor-side licence server — is from [`add-marketplace-license-verification-calls-to-the-plugin-code`](https://plugins.jetbrains.com/docs/marketplace/add-marketplace-license-verification-calls-to-the-plugin-code.html): *"all communication with the JetBrains Marketplace licensing infrastructure takes place on the IntelliJ Platform side."*
+
+**Perforce pricing terms** in [9.5](#95-what-it-costs-to-run--and-what-you-do-not-host) are from [`perforce.com/products/p4/pricing`](https://www.perforce.com/products/p4/pricing) and [`perforce.com/products/p4/free-version-control`](https://www.perforce.com/products/p4/free-version-control).
+
+**IDE release cadence** — three majors a year, in three stable windows, every year 2016 → 2026 — is from JetBrains' own release feed: `data.services.jetbrains.com/products/releases?code=IIU&latest=false`.
+
+**Not used, deliberately:** JetBrains grants no documented free IDE licence to plugin developers (no such program was found in the 88-page Marketplace docs set or the licensing FAQ index), so [9.5](#95-what-it-costs-to-run--and-what-you-do-not-host) does not assume one — it rests on `compatible-products` instead.
 
 **Session history.** The full research trail — including the seven rejected candidates, the corrected TeamCity misidentification, and the raw API probes — came from a prior working session on an unrelated product launch. This repo is the consolidated output of that work. Nothing here depends on that session; this document is self-contained.
 
@@ -667,8 +745,12 @@ Three of that author's own published retractions are worth noting, because they 
 | JetBrains' own Perforce plugin has been broken for 12 years | ✅ **10 dated reviews, 2014 → 2026, newest 2025-01 and 2026-03** |
 | The pain is **widespread** | ❌ **Not proven.** Seven voters. This is what the 10 interviews are for. |
 | People will pay **for this specific plugin** | ❌ **Unknown.** Trial → paid conversion is not publicly derivable. |
-| The incumbent is not bundled | ⚠️ **Suggestive only.** Verify in the Day-0 gate. |
+| The incumbent is not bundled | ⚠️ **Narrowed.** `compatible-products` includes free `IDEA`, excludes `IDEA_PRO`. Entitlement question still open. |
+| You host nothing — no backend, no licence server | ✅ **Documented.** Licensing runs entirely on the IntelliJ Platform side. |
+| Recurring infrastructure cost is €0 | ✅ **Documented** — free listing, free signing, free self-hosted test server. |
+| The free Perforce tier covers solo development | ✅ **Documented** (5 users / 20 workspaces, self-hosted, no storage cap). ⚠️ Still unread: its licence terms for commercial use. |
+| You need a paid IDE to develop this | ❌ **Not supported.** The incumbent and the free rival both list free `IDEA`. |
 
 ---
 
-*Compiled 2026-09-30. Every number in this document is reproducible from a public endpoint in under two minutes — if a future reading finds a figure that no longer matches, trust the endpoint and correct this file.*
+*Compiled 2026-09-30; [9.5](#95-what-it-costs-to-run--and-what-you-do-not-host) and risk #5 added 2026-10-01. Every number in this document is reproducible from a public endpoint in under two minutes — if a future reading finds a figure that no longer matches, trust the endpoint and correct this file.*
