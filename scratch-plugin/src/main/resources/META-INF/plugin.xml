@@ -1,0 +1,10 @@
+<idea-plugin>
+    <id>dev.perforce-intellij-integration.day0-skeleton</id>
+    <name>Perforce IntelliJ Integration (Day-0 skeleton)</name>
+    <vendor>p4ii</vendor>
+    <description>Day-0 gate item 4 proof-of-build: p4 CLI to changelist tree with submit/shelve/revert and p4 info diagnostics. Not a release.</description>
+    <depends>com.intellij.modules.platform</depends>
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="Perforce P4" factoryClass="p4gate.P4ToolWindowFactory" anchor="right"/>
+    </extensions>
+</idea-plugin>

@@ -1,0 +1,18 @@
+package p4gate;
+
+import com.intellij.openapi.project.Project;
+import com.intellij.openapi.wm.ToolWindow;
+import com.intellij.openapi.wm.ToolWindowFactory;
+import com.intellij.ui.content.Content;
+import com.intellij.ui.content.ContentFactory;
+import org.jetbrains.annotations.NotNull;
+
+/** Registers the "Perforce P4" tool window: changelist tree driven by the p4 CLI. */
+public final class P4ToolWindowFactory implements ToolWindowFactory {
+    @Override
+    public void createToolWindowContent(@NotNull Project project, @NotNull ToolWindow toolWindow) {
+        P4Panel panel = new P4Panel();
+        Content content = ContentFactory.getInstance().createContent(panel.root(), "Changelists", false);
+        toolWindow.getContentManager().addContent(content);
+    }
+}

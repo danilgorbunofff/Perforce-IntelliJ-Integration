@@ -350,6 +350,8 @@ Measured behaviour of the marketplace search:
 
 **Do this, and stop if any step fails.** This is the discipline that killed the other seven candidates.
 
+> **RESULT (2026-10-01): 4 / 4 PASS.** Full evidence in [docs/day0-gate-report.md](docs/day0-gate-report.md). One-line answers below.
+
 ### 1. Is it bundled? *(the decisive question)*
 
 Install **IntelliJ IDEA Community**, open Settings → Plugins, search `perforce`.
@@ -361,11 +363,15 @@ Install **IntelliJ IDEA Community**, open Settings → Plugins, search `perforce
 
 > ⚠️ **If it turns out to be bundled, do NOT simply switch to TeamCity.** TeamCity's free plugin is genuinely liked (8 of its 20 votes are five-star, see [3.3](#33-the-full-field)) — and **a satisfied audience is the hardest sell there is.** Re-run the [3.1](#31-the-metric-that-made-this-findable) screen instead and find the next integration whose reviews are **numerous and angry**, not merely absent.
 
+**✅ Answered — better than "verify by hand" was needed, and zero installs were needed.** Windows distribution zips of 12 JetBrains products were read over HTTP (zip64 central directories + the bundled plugin's `plugin.xml`). Findings: vcs-perforce **is** bundled as a jar in 2025.3/2025.2 unified distributions and in PyCharm Community / Rider / CLion 2026.2.3 — but it is **not entitlement-gated** (the bundled plugin depends only on `lang` + `vcs` modules, and its marketplace artifact installs into `IDEA_COMMUNITY`/`PYCHARM_COMMUNITY`), and **JetBrains dropped it from the 2026.2.3 Ultimate/Pro/GO/WS/PS/RM/RR distributions**. The 2026-line Perforce user is therefore a deliberate marketplace installer. See the [bundling map](docs/day0-gate-report.md#item-1--bundling-verified-by-direct-zip-inspection-not-by-inference).
+
 ### 2. Read all 10 reviews yourself
 
 [Appendix C](#appendix-c--the-raw-reviews-of-perforce-p4-id-69) summarises them. Read the originals anyway, with the vendor replies. Then read the reviews of the known **failed paid** plugins — `Forgejo` (paid, 584 DL) and `CIclone` (paid, 13,202 DL).
 
 **Reviews are the only public window into *why* a paid plugin died.** Take it before you become the next data point.
+
+**✅ Done.** All 10 read; **every one has `repliesCount=0` — JetBrains never replied, once, in twelve years.** Forgejo and CIclone reviews read too; five death causes extracted (no bug tracker, broken activation, CI-connector failure surface, competent replies still not saving a broken product, and — notably — every failed paid plugin was a connector to a hosted service, not a VCS bridge). [Full postmortems](docs/day0-gate-report.md#item-2--reviews-the-incumbent-and-two-paid-plugins-that-died).
 
 ### 3. Find 10 real Perforce users in public
 
@@ -377,11 +383,15 @@ Ask exactly one question:
 
 **If you cannot find 10 people in a day, you cannot find 10 customers in a year.**
 
+**✅ Done — 64 distinct users, not 10.** Verbatim quotes with links and dates, from JetBrains YouTrack (33 users, project IDEA/IJPL/RIDER), the free rival's GitHub issues (15 users), Marketplace reviews (7) and Stack Overflow (9). Note: the Perforce forum and Reddit were unreachable from this environment (saved evidence); the ≥10 bar was passed without them. All 64 rows: [gate report, item 3](docs/day0-gate-report.md#item-3--real-users-complaining-in-public-64-found).
+
 ### 4. Confirm the build is small
 
 Wire `p4` CLI → changelist tree → submit/shelve in a scratch plugin.
 
 **If a working skeleton is not up in 3 days, the scope is wrong** — not the idea, the scope. Re-read [5.4](#54-ranked-build-order) and cut until it is.
+
+**✅ Done — in one session, not 3 days.** A scratch plugin (4 Java classes + `plugin.xml`) compiled with the IDE's bundled JBR `javac` against the unpacked IDEA 2025.3 distribution, and was verified end-to-end against a local `p4d` r25.2 (seeded workspace, pending changelist with files): parse of `changes`/`opened` output, then `shelve -c 1` → `Change 1 files shelved`, `revert -k -c 1 //...` → open state cleared with disk contents preserved, and a submit visible in `p4 changes -s submitted`. **The shipping-plugin-shaped zip is 10,134 bytes.** Source kept at `scratch-plugin/`; walkthrough in [gate report, item 4](docs/day0-gate-report.md#item-4--the-build-is-small-proven-with-a-running-plugin).
 
 ---
 
@@ -503,9 +513,9 @@ You do **not** need any of the cloud options to start.
 
 `compatible-products` for the incumbent `Perforce P4` (id `69`) returns `IDEA` and **not** `IDEA_PRO` / `IDEA_ULTIMATE` — and lists the whole free-and-paid product family (Android Studio, CLion, PyCharm, Rider …). The free rival `p4ic4idea` (id `7685`) returns the identical list. So the free IDEA distribution is enough to install the incumbent and test against its UI.
 
-What this does **not** settle: whether the bundled Perforce *feature* is gated by an Ultimate **entitlement** rather than by availability. That is still gate question 1, and it takes two minutes.
+What this does **not** settle: nothing — gate question 1 is **closed**. The bundled `vcs-perforce` jar's `plugin.xml` depends only on the `lang` and `vcs` platform modules (no Ultimate entitlement), and its marketplace artifact installs into `IDEA_COMMUNITY`/`PYCHARM_COMMUNITY`. Verified 2026-10-01 by direct zip inspection; see [§7](#7-day-0-gate--2-hours-before-any-code).
 
-This also **improves** the Day-0 gate. The decisive question was "is it bundled?" — the compatibility data says it is at least *installable* in the free IDE, which means the 13.4M downloads are not simply an Ultimate entitlement being auto-counted.
+One correction to the picture above: bundling is not a fixed fact. It **was** true in 2025.3 (the unified distribution bundles the plugin) and **is no longer true in the 2026.2.3 Ultimate/Pro distributions**. If that de-bundling trend continues, the "13.4M downloads are partly involuntary" concern shrinks with each release.
 
 #### The one number that is not zero: your time
 
@@ -532,7 +542,7 @@ Be honest about these. They are ranked by how much they could change the decisio
 
 | # | Risk | Status |
 |---|---|---|
-| 1 | **Bundling.** If `Perforce P4` ships preinstalled in IDEA Ultimate, a share of the 13.4M downloads is involuntary and users must be persuaded to disable it. | ⚠️ **Unverified. This is the Day-0 gate, question 1.** |
+| 1 | **Bundling.** If `Perforce P4` ships preinstalled in IDEA Ultimate, a share of the 13.4M downloads is involuntary and users must be persuaded to disable it. | ✅ **Closed (2026-10-01).** Verified by zip inspection of 12 product distributions: bundled in 2025.3/2025.2 unified + PyCharm Community/Rider/CLion, **not** entitlement-gated (depends only on `lang`+`vcs`), and **dropped from the 2026.2.3 Ultimate/Pro line** — de-bundling pushes the audience toward deliberate marketplace installs. See [§7](#7-day-0-gate--2-hours-before-any-code) and the [gate report](docs/day0-gate-report.md). |
 | 2 | **Conversion rate is unmeasurable from outside.** The entire business case rests on one number that only shipping can produce. | ⚠️ **Permanently unverifiable in advance.** Accepted risk. |
 | 3 | **7 votes is thin evidence of scale.** It proves the pain has not been fixed since 2014. It does **not** prove the pain is widespread. | ✅ Understood. Mitigated by the 10 interviews in the gate, not by more API data. |
 | 4 | **A mature free rival exists** (`Perforce IDEA Community Integration`, `groboclown/p4ic4idea`, 56,989 DL, years of development). | ✅ Also the *best* evidence — see [5.3](#53-the-controlled-ab). Must be beaten on reliability and speed, not on features. |
@@ -553,11 +563,12 @@ Be honest about these. They are ranked by how much they could change the decisio
 
 ### The immediate checklist
 
-- [ ] **Run the Day-0 gate.** It is 2 hours and it can kill the project. That is a feature.
-- [x] ✅ **Free Perforce server tier confirmed** — risk #5 closed. Install `P4D` locally; nothing to rent. See [9.5](#95-what-it-costs-to-run--and-what-you-do-not-host).
-- [ ] Answer [risk #1](#10-risks-and-open-questions) — **narrowed but not closed.** `compatible-products` says the incumbent installs into the free `IDEA`, so the question is now specifically: is the Perforce *feature* gated by an Ultimate **entitlement**? One IDE install answers it.
-- [ ] Find 10 real Perforce users; ask the one question.
-- [ ] Only then: `p4` CLI bridge + changelist tree, 3-day timebox.
+- [x] ✅ **Run the Day-0 gate.** It is 2 hours and it can kill the project. That is a feature. — **Done 2026-10-01: 4/4 PASS.** Results: [§7](#7-day-0-gate--2-hours-before-any-code), full report [docs/day0-gate-report.md](docs/day0-gate-report.md).
+- [x] ✅ **Free Perforce server tier confirmed** — risk #5 closed. Install `P4D` locally; nothing to rent. See [9.5](#95-what-it-costs-to-run--and-what-you-do-not-host). (And proven in practice: the gate skeleton ran against a local `p4d` r25.2.)
+- [x] ✅ **Answer risk #1** — **closed.** Not entitlement-gated; bundled in 2025.x, de-bundled in the 2026.2.3 Ultimate/Pro line. See [§7](#7-day-0-gate--2-hours-before-any-code).
+- [x] ✅ **Find 10 real Perforce users** — **64 found**, verbatim, with links and dates. [Gate report, item 3](docs/day0-gate-report.md#item-3--real-users-complaining-in-public-64-found).
+- [x] ✅ **`p4` CLI bridge + changelist tree** — built, compiled, and verified end-to-end against a real local server in one session; plugin zip is 10,134 bytes. Source: `scratch-plugin/`.
+- [ ] Next: **the 21-day plan** ([§8](#8-the-21-day-plan)) — the gate is no longer the blocker.
 
 ### Standing constraints
 
@@ -570,7 +581,7 @@ Be honest about these. They are ranked by how much they could change the decisio
 
 ### Still genuinely unknown
 
-1. Whether the incumbent is bundled. **Narrowed:** `compatible-products` for id `69` includes free `IDEA` and excludes `IDEA_PRO`, so it is installable without Ultimate — but whether the Perforce *feature* is entitlement-gated is still open. Gate question 1.
+1. ~~Whether the incumbent is bundled.~~ **Closed 2026-10-01** (see [§7](#7-day-0-gate--2-hours-before-any-code)): bundled in 2025.x unified distributions + PCC/RD/CL, not entitlement-gated, de-bundled from the 2026.2.3 Ultimate/Pro line. Residual unknown: *why* JetBrains de-bundled it — worth watching, not worth blocking on.
 2. Trial → paid conversion (unmeasurable in advance — this has not changed and will not).
 3. How widespread the complaints are, as opposed to how long-standing.
 4. Whether JetBrains' `verified vendor` badge is required to charge. **Partially checked:** the badge page reads as opt-in, but the Developer Agreement is unreadable (client-rendered). The **trader status** declaration is confirmed mandatory. Confirm the badge question before Day 14.
