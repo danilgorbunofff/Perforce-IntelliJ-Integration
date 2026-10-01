@@ -18,5 +18,9 @@ public final class P4ToolWindowFactory implements ToolWindowFactory {
         P4Connect connect = new P4Connect();
         Content connection = ContentFactory.getInstance().createContent(connect.root(), "Connection", false);
         toolWindow.getContentManager().addContent(connection);
+
+        P4StreamsPanel streams = new P4StreamsPanel();
+        Content streamTab = ContentFactory.getInstance().createContent(streams.root(), "Streams", false);
+        toolWindow.getContentManager().addContent(streamTab);
     }
 }
