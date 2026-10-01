@@ -36,6 +36,12 @@ public final class P4Panel {
         top.add(button("Shelve", this::shelveSelected));
         top.add(button("Revert (-k)", this::revertSelected));
         top.add(button("Ignore file", this::ignoreSelected));
+        top.add(button("Diff", this::diffSelected));
+        top.add(button("Annotate", this::annotateSelected));
+        top.add(button("Reconcile workspace", this::reconcile));
+        top.add(button("Sync + resolve", this::syncResolve));
+        top.add(button("Resolve theirs", () -> resolveFlag("-at")));
+        top.add(button("Resolve mine", () -> resolveFlag("-ay")));
         top.add(button("p4 info", this::showInfo));
 
         JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, new JScrollPane(tree), new JScrollPane(submittedTable));
@@ -170,6 +176,68 @@ public final class P4Panel {
     private void shelveSelected() { onSelected(this::shelve); }
 
     private void revertSelected() { onSelected(this::revert); }
+
+    /** File nodes only: "<depot path> — <action> @<cl>". Returns null with message shown when not applicable. */
+    private String selectedDepotFile(String emptyMessage) {
+        Object o = selectionObject(emptyMessage);
+        if (o == null) {
+            return null;
+        }
+        if (!(o instanceof String node)) {
+            status.setText("select a file node (a changelist is not a file)");
+            return null;
+        }
+        return node.split(" — ")[0].trim();
+    }
+
+    private void diffSelected() {
+        String depotFile = selectedDepotFile("select a file under a changelist first");
+        if (depotFile == null) {
+            return;
+        }
+        // diff opened work against the depot revision it was based on
+        new Thread(() -> {
+            P4Cli.Result r = P4Cli.run("diff", depotFile);
+            SwingUtilities.invokeLater(() -> status.setText("diff " + depotFile + "\n" + r.text()));
+        }).start();
+    }
+
+    private void annotateSelected() {
+        String depotFile = selectedDepotFile("select a file under a changelist first");
+        if (depotFile == null) {
+            return;
+        }
+        // annotate needs a submitted (or synced) revision; on an opened file p4 diffs head revision history
+        new Thread(() -> {
+            P4Cli.Result r = P4Cli.run("annotate", depotFile);
+            SwingUtilities.invokeLater(() -> status.setText("annotate " + depotFile + "\n" + r.text()));
+        }).start();
+    }
+
+    /** `p4 resolve -n` preview: opens for add what exists locally but not in the depot, skips P4IGNORE files. */
+    private void reconcile() {
+        new Thread(() -> {
+            P4Cli.Result preview = P4Cli.run("reconcile", "-n", "//...");
+            SwingUtilities.invokeLater(() -> status.setText("reconcile preview (-n)\n" + preview.text()));
+        }).start();
+    }
+
+    /** Picks a side for files `-am` left unresolved (e.g. the same-line conflict seeded on f0002.txt). */
+    private void resolveFlag(String flag) {
+        new Thread(() -> {
+            P4Cli.Result r = P4Cli.run("resolve", flag, "//...");
+            SwingUtilities.invokeLater(() -> status.setText("resolve " + flag + "\n" + r.text()));
+        }).start();
+    }
+
+    /** sync brings in newer revisions, `resolve -n` lists what needs merging, `-am` auto-resolves the safe parts. */
+    private void syncResolve() {
+        new Thread(() -> {
+            P4Cli.Result sync = P4Cli.run("sync", "//...");
+            P4Cli.Result resolve = P4Cli.run("resolve", "-am", "//...");
+            SwingUtilities.invokeLater(() -> status.setText("sync:\n" + sync.text() + "\n\nresolve -am:\n" + resolve.text()));
+        }).start();
+    }
 
     private void submit(long id) {
         P4Cli.Result r = P4Cli.run("submit", "-c", String.valueOf(id));
