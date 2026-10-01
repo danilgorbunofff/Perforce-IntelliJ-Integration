@@ -11,7 +11,7 @@ import java.util.TreeMap;
 
 /** Collects every place a p4 connection's settings can come from: this process's environment, `p4 set` (the OS-level defaults, e.g. Windows registry), and P4CONFIG files found above the workspace directory. */
 public final class P4Env {
-    public static final List<String> KEYS = List.of("P4PORT", "P4USER", "P4CLIENT", "P4CONFIG", "P4CHARSET");
+    public static final List<String> KEYS = List.of("P4PORT", "P4USER", "P4CLIENT", "P4HOST", "P4CONFIG", "P4IGNORE", "P4CHARSET");
 
     private P4Env() { }
 
@@ -25,9 +25,21 @@ public final class P4Env {
         return out;
     }
 
-    /** Raw `p4 set` output — the OS-level defaults p4 falls back to when the env says nothing. */
-    public static String p4Set() {
-        return P4Cli.run("set").text();
+    /** Raw `p4 set` output, run from the cli's workdir: p4's own view of every setting and where it came from. */
+    public static String p4Set(P4Cli cli) {
+        return cli.run("set").text();
+    }
+
+    /** `p4 set` lines for {@link #KEYS}, keeping p4's source annotation, e.g. {@code P4PORT=host:1666 (config '/ws/.p4config')}.
+     *  This is the authoritative answer to "which config file did p4 actually read". */
+    public static List<String> annotatedSet(String p4SetOutput) {
+        List<String> out = new java.util.ArrayList<>();
+        for (String line : p4SetOutput.split("\n")) {
+            String t = line.strip();
+            int eq = t.indexOf('=');
+            if (eq > 0 && KEYS.contains(t.substring(0, eq).strip())) out.add(t);
+        }
+        return out;
     }
 
     /** Parse lines like `P4PORT=127.0.0.1:1666 (set)` / `P4CONFIG=p4config.txt (set) (config 'noconfig')` — p4 appends one or more annotation groups after the value. */
