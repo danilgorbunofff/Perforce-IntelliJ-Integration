@@ -1,19 +1,29 @@
-# Day-0 skeleton build: javac against the local IDE distribution, package with python zipfile.
-# Usage:  powershell -File build.ps1
+# Skeleton build: javac against a local IDE distribution, run the parser tests, package with python zipfile.
+# Usage:  powershell -File build.ps1 -IdeHome C:\path\to\idea-2025.3     (or set $env:IDEA_HOME)
+# The IDE distribution supplies both the platform jars and the JBR (javac/java). Gradle + verifyPlugin are still TODO.
+param([string]$IdeHome = $env:IDEA_HOME)
 $ErrorActionPreference = "Stop"
 $env:PYTHONIOENCODING = "utf-8"
-$gate = "C:\Users\danil_gorbunov\.copilot\session-state\c5230b9d-290c-4ffa-9d23-d034a7dcd0eb\files\day0-gate"
-$ide = "$gate\idea-2025.3"
-$javac = "$ide\jbr\bin\javac.exe"
+if (-not $IdeHome) { throw "pass -IdeHome <unpacked IDE dir> or set IDEA_HOME (an unpacked IntelliJ 2025.3 distribution)" }
+$javac = "$IdeHome\jbr\bin\javac.exe"
+$java = "$IdeHome\jbr\bin\java.exe"
 $out = "$PSScriptRoot\out"
 
 if (-not (Test-Path $javac)) { throw "javac not found at $javac" }
 Remove-Item -Recurse -Force $out -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force "$out\classes" | Out-Null
+New-Item -ItemType Directory -Force "$out\classes", "$out\test-classes" | Out-Null
 
-$sources = Get-ChildItem -Recurse "$PSScriptRoot\src\main\java" -Filter *.java | ForEach-Object { $_.FullName }
-& $javac -encoding UTF-8 -proc:none -cp "$ide\lib\*;$ide\lib\modules\*" -d "$out\classes" @sources
+$cp = "$IdeHome\lib\*;$IdeHome\lib\modules\*"
+$sources = @(Get-ChildItem -Recurse "$PSScriptRoot\src\main\java" -Filter *.java | ForEach-Object { $_.FullName })
+& $javac -encoding UTF-8 -proc:none -Xlint:all -Xlint:-serial -cp $cp -d "$out\classes" @sources
 if ($LASTEXITCODE -ne 0) { throw "javac failed with exit code $LASTEXITCODE" }
+
+# parser/diagnosis tests: fixtures are real r25.2 output; no server needed
+$tests = @(Get-ChildItem -Recurse "$PSScriptRoot\src\test\java" -Filter *.java | ForEach-Object { $_.FullName })  # @(): one file must still splat as an array
+& $javac -encoding UTF-8 -proc:none -cp "$out\classes;$cp" -d "$out\test-classes" @tests
+if ($LASTEXITCODE -ne 0) { throw "test javac failed with exit code $LASTEXITCODE" }
+& $java -cp "$out\classes;$out\test-classes;$cp" p4gate.P4ParseTest
+if ($LASTEXITCODE -ne 0) { throw "tests failed" }
 
 @'
 import zipfile, os, sys
