@@ -49,13 +49,13 @@ public final class P4Data {
     /** Pending changelists with the files opened in each (default first).
      *  Batched: one `p4 changes -s pending` + one `p4 opened`, files grouped locally by CL number. */
     public static List<Change> pendingChanges() {
-        Map<Long, String> headers = new LinkedHashMap<>();
+        Map<Long, String[]> headers = new LinkedHashMap<>(); // id -> [user, desc]
         P4Cli.Result r = P4Cli.run("changes", "-s", "pending");
         if (r.ok()) {
             for (String line : r.out().split("\n")) {
                 Matcher m = CHANGE_LINE.matcher(line.trim());
                 if (m.matches()) {
-                    headers.put(Long.parseLong(m.group(1)), m.group(3));
+                    headers.put(Long.parseLong(m.group(1)), new String[]{m.group(2), m.group(3)});
                 }
             }
         }
@@ -74,8 +74,8 @@ public final class P4Data {
         }
         List<Change> result = new ArrayList<>();
         result.add(new Change(0, "", "default", filesByCl.getOrDefault(0L, List.of())));
-        for (Map.Entry<Long, String> e : headers.entrySet()) {
-            result.add(new Change(e.getKey(), "", e.getValue(), filesByCl.getOrDefault(e.getKey(), List.of())));
+        for (Map.Entry<Long, String[]> e : headers.entrySet()) {
+            result.add(new Change(e.getKey(), e.getValue()[0], e.getValue()[1], filesByCl.getOrDefault(e.getKey(), List.of())));
         }
         return result;
     }
