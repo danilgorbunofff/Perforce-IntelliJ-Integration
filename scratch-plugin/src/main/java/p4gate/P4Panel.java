@@ -7,7 +7,7 @@ import javax.swing.tree.TreePath;
 import java.awt.*;
 import java.util.List;
 
-/** Tool window content: pending changelist tree + submit/shelve/revert/info actions driven by the p4 CLI. */
+/** Tool window content: pending changelist tree + submit/shelve/revert/info actions driven by the p4 CLI. All p4 work runs off the EDT; all Swing access happens on it. */
 public final class P4Panel {
     private final JTree tree = new JTree(new DefaultTreeModel(new DefaultMutableTreeNode("no data yet — press Refresh")));
     private final JTextArea status = new JTextArea(10, 70);
@@ -15,9 +15,9 @@ public final class P4Panel {
     public JComponent root() {
         JPanel top = new JPanel(new FlowLayout(FlowLayout.LEFT));
         top.add(button("Refresh", this::refresh));
-        top.add(button("Submit", () -> onSelected(this::submit)));
-        top.add(button("Shelve", () -> onSelected(this::shelve)));
-        top.add(button("Revert (-k)", () -> onSelected(this::revert)));
+        top.add(button("Submit", this::submitSelected));
+        top.add(button("Shelve", this::shelveSelected));
+        top.add(button("Revert (-k)", this::revertSelected));
         top.add(button("p4 info", this::showInfo));
 
         JPanel panel = new JPanel(new BorderLayout());
@@ -30,12 +30,15 @@ public final class P4Panel {
 
     private static JButton button(String label, Runnable action) {
         JButton b = new JButton(label);
-        b.addActionListener(e -> new Thread(() -> action.run()).start());
+        b.addActionListener(e -> action.run()); // EDT: these bodies only start background work or read Swing state
         return b;
     }
 
     private void refresh() {
-        List<P4Data.Change> changes = P4Data.pendingChanges();
+        new Thread(() -> refreshTree(P4Data.pendingChanges())).start();
+    }
+
+    private void refreshTree(List<P4Data.Change> changes) {
         SwingUtilities.invokeLater(() -> {
             DefaultMutableTreeNode root = new DefaultMutableTreeNode("pending changelists (" + changes.size() + ")");
             for (P4Data.Change c : changes) {
@@ -51,10 +54,13 @@ public final class P4Panel {
     }
 
     private void showInfo() {
-        P4Cli.Result r = P4Cli.run("info");
-        SwingUtilities.invokeLater(() -> status.setText(r.text()));
+        new Thread(() -> {
+            P4Cli.Result r = P4Cli.run("info");
+            SwingUtilities.invokeLater(() -> status.setText(r.text()));
+        }).start();
     }
 
+    /** Reads the selection here on the EDT, then runs the operation on a background thread. */
     private void onSelected(java.util.function.Consumer<Long> op) {
         TreePath path = tree.getSelectionPath();
         if (path == null) {
@@ -66,9 +72,18 @@ public final class P4Panel {
             status.setText("select a numbered changelist (not the default)");
             return;
         }
-        op.accept(c.id());
-        refresh();
+        long id = c.id();
+        new Thread(() -> {
+            op.accept(id);
+            refreshTree(P4Data.pendingChanges());
+        }).start();
     }
+
+    private void submitSelected() { onSelected(this::submit); }
+
+    private void shelveSelected() { onSelected(this::shelve); }
+
+    private void revertSelected() { onSelected(this::revert); }
 
     private void submit(long id) {
         P4Cli.Result r = P4Cli.run("submit", "-c", String.valueOf(id));

@@ -399,9 +399,9 @@ Wire `p4` CLI → changelist tree → submit/shelve in a scratch plugin.
 
 | Days | Do | Output |
 |---|---|---|
-| **0** | The gate above | **build / re-screen / stop** |
-| 1–3 | `p4` CLI bridge + changelist tree in a scratch plugin | a skeleton that lists real changelists |
-| 4–10 | The three ranked items in [5.4](#54-ranked-build-order) — connect-and-explain, speed, streams/ignore — validated against the 10 interviews | a build you would use yourself |
+| **0** | The gate above | **build / re-screen / stop** — ✅ **done, 4/4 PASS** ([§7](#7-day-0-gate--2-hours-before-any-code)) |
+| 1–3 | `p4` CLI bridge + changelist tree in a scratch plugin | ✅ **done** — the gate skeleton already is it: lists real pending changelists against a local `p4d`; verified end-to-end (shelve / `revert -k` / submit). Source: `scratch-plugin/` |
+| 4–10 | The three ranked items in [5.4](#54-ranked-build-order) — connect-and-explain, speed, streams/ignore — validated against the 10 interviews | 🚧 **item 1 done** — a **Connection tab** that shows the exact command, every setting source (env, `p4 set`, P4CONFIG), raw p4 output, a verdict naming the first failing step, and one-click import of a known-good P4CONFIG. Verified in 5 scenarios against real `p4d`, including the failure path and two silent-misconfiguration traps (a config file p4 ignores; config-vs-env precedence). Also in: all p4 work off the EDT (item 2 groundwork). Items 2–3 next | a build you would use yourself |
 | 11–13 | Submit, shelve, reconcile, diff, annotate, conflict resolution | feature-complete v1 |
 | 14 | Marketplace listing: 5 screenshots, a 60-second GIF, a demo video | submitted for review |
 | 15–18 | Reviews take days. Write the "why" page and the docs | listed |

@@ -13,6 +13,20 @@ public final class P4Cli {
     /** Override with -Dp4.executable=/path/to/p4 (or p4.executable in the IDE VM options). */
     public static final String EXECUTABLE = System.getProperty("p4.executable", "p4");
 
+    /** Working directory p4 runs in — where P4CONFIG resolution starts. Override with -Dp4.workdir. */
+    public static final String WORKDIR = System.getProperty("p4.workdir", System.getProperty("user.dir"));
+
+    /** Plugin-managed env overrides (e.g. imported from a known-good P4CONFIG), applied to every p4 process. */
+    private static volatile java.util.Map<String, String> envOverride = java.util.Map.of();
+
+    public static void setEnvOverride(java.util.Map<String, String> env) {
+        envOverride = java.util.Map.copyOf(env);
+    }
+
+    public static java.util.Map<String, String> envOverride() {
+        return envOverride;
+    }
+
     public record Result(int code, String out, String err) {
         public boolean ok() { return code == 0; }
         public String text() { return err.isBlank() ? out : out + "\n" + err; }
@@ -26,6 +40,8 @@ public final class P4Cli {
         cmd.addAll(Arrays.asList(args));
         try {
             ProcessBuilder pb = new ProcessBuilder(cmd);
+            pb.directory(new java.io.File(WORKDIR));
+            pb.environment().putAll(envOverride);
             pb.redirectErrorStream(true);
             Process p = pb.start();
             StringBuilder sb = new StringBuilder();
