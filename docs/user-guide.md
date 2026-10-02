@@ -1,10 +1,10 @@
 # Perforce IntelliJ Integration — user guide
 
-*Status: v0.2 skeleton (post-review). The p4 behaviour below is verified against Helix Core r25.2 on Windows; the IDE dialogs are compiled against 2025.3 but have not yet had a GUI pass. See [why.md](why.md) for the product rationale and [day0-gate-report.md](day0-gate-report.md) for the gate evidence.*
+*Status: v0.3 (VCS provider). The p4 behaviour below is verified against Helix Core r25.2 on Windows; the IDE dialogs and the VCS integration are compiled against 2025.3 and unit-tested, but have not yet had a GUI pass. See [why.md](why.md) for the product rationale and [day0-gate-report.md](day0-gate-report.md) for the gate evidence.*
 
 ## Requirements
 
-- A JetBrains IDE (IntelliJ IDEA, PyCharm, GoLand, Rider, …), build 253 (2025.3) or newer — the plugin depends only on `com.intellij.modules.platform`.
+- A JetBrains IDE (IntelliJ IDEA, PyCharm, GoLand, Rider, …), build 253 (2025.3) or newer — the plugin depends only on `com.intellij.modules.platform` and `com.intellij.modules.vcs`, both bundled with every IntelliJ Platform IDE.
 - The **`p4` CLI client**. Set its path in the Connection tab (**p4 executable**); default: `p4` from PATH. (`-Dp4.executable=…` in the IDE VM options still works as the initial default.)
 - A reachable Perforce server and workspace, configured the way any `p4` client is: environment variables, `p4 set` (OS registry), and/or a P4CONFIG file.
 
@@ -77,6 +77,18 @@ Mutating operations run one at a time per project (a double click cannot submit 
 - With `P4IGNORE` unset, **both** `p4ignore.txt` and `.p4ignore` are honored. Once `P4IGNORE` is set, only the files it names are.
 - `p4 add` **refuses** ignored files ("ignored file can't be added."). The override is **`-I`** (`p4 add -I`), *not* `-f` — `-f` is wildcard-hex escaping, a common mistake.
 
+## Local Changes, commit and rollback
+
+The plugin also registers itself as the project's VCS, so the platform's own **Local Changes** view, **Commit** action and **Rollback** work on a Perforce workspace. A project is claimed when a content root contains a `.p4config` file or sits under one; a project that is not claimed gets no Perforce change lists and the integration stays out of the way (the tool window still works as described above).
+
+- **Local Changes** lists what `p4 opened` reports for the current client — the same source the Changelists tab uses — plus one `p4 fstat` call that translates each depot path into the local file. There is no directory scan, so a file that is not open in Perforce never appears as changed. Refreshing a dirty scope uses the same two calls, scoped to the paths that actually changed.
+- **Status** comes from the p4 action: `add`/`branch`/`import`/`move/add` show as **new**, `delete`/`move/delete`/`purge` as **deleted**, `integrate`/`resolve` as **merge**, anything else (usually `edit`) as **modified**. An opened file that is missing from disk shows as **deleted from filesystem**.
+- **Diff** needs no depot access: the "before" side is revision `#have`, the "after" side is the file as it is on disk, so the IDE's differ shows your edits against the synced copy — no `p4 print`, no round trip.
+- **Commit** groups the selected files by the changelist p4 holds them open in and submits each group: `p4 submit -c <cl>` for a numbered changelist, `p4 submit -d <message>` for the default one. A file that is not open in Perforce is reported as an error that names it rather than being skipped quietly — run **Add** first.
+- **Add to VCS** runs `p4 add`. A file you deleted from disk is recorded with `p4 reconcile -d`, because `p4 delete` needs the file to still exist.
+- **Rollback** runs `p4 revert -k`: the open state is dropped and the file stays on disk exactly as it is. The destructive `p4 revert`, which restores depot content, stays in the tool window as **Revert (discard edits)…**, behind a confirmation that lists the files.
+- **What does not happen:** editing a read-only file does not run `p4 edit` (no `EditFileProvider`), and a writable-but-unopened file — one left behind by **Revert (keep files)**, for example — does not appear in Local Changes until **Reconcile…** opens it.
+
 ## Streams tab
 
 **Refresh** builds the stream tree from `p4 streams`: each stream shows name, type and parent, nested under its parent (`none`-parented mainlines at the top; streams whose parent is not listed also show top-level). The header shows the current client's stream, or says it is a classic client. Failures are shown in the tree.
@@ -93,8 +105,9 @@ Mutating operations run one at a time per project (a double click cannot submit 
 
 ## Current limitations
 
-- Not registered as the IDE's project VCS provider yet: the native Local Changes view, commit dialog and gutter diff stay dark; edits are not checked out automatically when you type.
-- No fstat cache, no background refresh — Refresh is on demand.
+- Registered as the IDE's project VCS, but not yet exercised in a running IDE: Local Changes, Commit and Rollback are compiled and unit-tested, never driven by a click. Treat them as unverified until the GUI pass in the release notes.
+- No automatic checkout: editing a read-only file does not run `p4 edit`, and edits to a writable-but-unopened file stay invisible until Reconcile.
+- No fstat cache, no background refresh — Refresh is on demand (the platform's own invalidation of Local Changes uses the same two calls).
 - No unshelve, new-changelist, move/rename or delete operations yet.
 - Output is decoded as UTF-8; on a non-unicode server, non-ASCII file names may display incorrectly.
 - Built with a PowerShell + `javac` script, not Gradle: no `verifyPlugin`, no signing yet.

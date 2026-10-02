@@ -4,9 +4,13 @@
     <vendor>p4ii</vendor>
     <!-- Compiled and verified against 2025.3 (build 253) only; no upper bound claimed until verifyPlugin runs on newer builds. -->
     <idea-version since-build="253"/>
-    <description>Skeleton build: p4 CLI changelist tree, edit/add/submit/shelve/revert/resolve/reconcile, and a connect-and-explain diagnosis. Not a release.</description>
+    <description>Skeleton build: p4 CLI changelist tree, edit/add/submit/shelve/revert/resolve/reconcile, a connect-and-explain diagnosis, and the project's Perforce VCS provider (native Local Changes, commit and rollback). Not a release.</description>
     <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.vcs</depends>
+
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow id="Perforce P4" factoryClass="p4gate.P4ToolWindowFactory" anchor="right"/>
+        <vcs name="Perforce" vcsClass="p4gate.P4Vcs" displayName="Perforce" administrativeAreaName=".p4config"/>
+        <vcsRootChecker implementation="p4gate.P4RootChecker"/>
     </extensions>
 </idea-plugin>

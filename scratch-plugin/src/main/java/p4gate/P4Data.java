@@ -142,15 +142,46 @@ public final class P4Data {
                 r.getOrDefault("userName", ""), r.getOrDefault("serverAddress", ""), r.getOrDefault("serverVersion", ""), null);
     }
 
+    /** Opened files among the given depot paths, deduplicated: `p4 opened -x <file>` is the only source. */
+    public static Listing<OpenedFile> openedFiles(P4Cli cli, List<String> depotPaths) {
+        if (depotPaths.isEmpty()) return new Listing<>(List.of(), null);
+        String args = P4Args.file(cli.workdir(), "p4ii-opened", depotPaths);
+        try {
+            P4Cli.Tagged t = cli.tagged(P4Cli.QUERY_TIMEOUT, () -> false, "opened", "-x", args);
+            if (t.error() != null) return Listing.failed(t.error());
+            Map<String, OpenedFile> files = new LinkedHashMap<>();
+            for (Map<String, String> r : t.records()) {
+                OpenedFile f = openedFile(r);
+                if (f != null) files.put(f.depotFile(), f);
+            }
+            return new Listing<>(List.copyOf(files.values()), null);
+        } finally {
+            P4Args.delete(args);
+        }
+    }
+
+    /** One `opened` record; null when it carries no depot path. "default" is the default changelist, id 0. */
+    static OpenedFile openedFile(Map<String, String> r) {
+        String depot = r.get("depotFile");
+        if (depot == null || depot.isBlank()) return null;
+        String change = r.getOrDefault("change", "default");
+        long cl = 0;
+        if (!change.equals("default")) {
+            try {
+                cl = Long.parseLong(change.strip());
+            } catch (NumberFormatException e) {
+                cl = 0;
+            }
+        }
+        return new OpenedFile(depot, r.getOrDefault("clientFile", ""), r.getOrDefault("action", "?"), cl, r.getOrDefault("type", ""));
+    }
+
     /** Default changelist first, then numbered changelists in p4's order (newest first); files grouped by change. */
     static List<Change> groupPending(List<Map<String, String>> changeRecords, List<Map<String, String>> openedRecords) {
         Map<Long, List<OpenedFile>> filesByCl = new LinkedHashMap<>();
         for (Map<String, String> r : openedRecords) {
-            String c = r.getOrDefault("change", "default");
-            long cl = c.equals("default") ? 0 : Long.parseLong(c);
-            filesByCl.computeIfAbsent(cl, k -> new ArrayList<>()).add(new OpenedFile(
-                    r.getOrDefault("depotFile", "?"), r.getOrDefault("clientFile", ""),
-                    r.getOrDefault("action", "?"), cl, r.getOrDefault("type", "")));
+            OpenedFile file = openedFile(r);
+            if (file != null) filesByCl.computeIfAbsent(file.change(), k -> new ArrayList<>()).add(file);
         }
         List<Change> result = new ArrayList<>();
         result.add(new Change(0, "", "default", filesByCl.getOrDefault(0L, List.of())));

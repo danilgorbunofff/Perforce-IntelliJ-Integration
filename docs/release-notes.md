@@ -1,5 +1,31 @@
 # Release notes
 
+## v0.3 (VCS provider, 2026-10-02)
+
+The plugin is now the IDE's Perforce VCS provider: **Local Changes**, the **commit dialog** and **Rollback** are wired to `p4`. Compiled and tested against 2025.3 (94 parser/logic checks, 0 failures). The provider itself has not yet been exercised in a running IDE with a real `p4` — see *Still open*.
+
+### Added
+
+- **Registered as the project VCS** — `<vcs name="Perforce" vcsClass="p4gate.P4Vcs">` plus a `<vcsRootChecker>`, with a new dependency on `com.intellij.modules.vcs`. A project is a Perforce project when a content root holds a `.p4config` (or sits under one); `needsLegacyDefaultMappings()` is off, so a project the plugin does not claim gets no Perforce change lists at all.
+- **Local Changes feed** — `p4 opened` (current client only) plus one `p4 fstat -T depotFile,clientFile` call to translate depot paths into local ones. No directory scan: a file you never opened cannot appear as changed, which is the difference that matters on a real workspace. A dirty-scope refresh uses the same two calls, scoped to the dirty paths.
+- **Statuses from the p4 action** — `add`/`branch`/`import`/`move/add` → new, `delete`/`move/delete`/`purge` → deleted, `integrate`/`resolve` → merge, everything else (typically `edit`) → modified; an opened file missing from disk → "deleted from filesystem", which is what makes plain `p4 revert` (not `-k`) the right rollback for it.
+- **Commit → `p4 submit`** — the selected files are grouped by the changelist p4 holds them open in and submitted per changelist, so one commit dialog can submit several changelists. A numbered changelist is submitted with `-c <cl>`; the default changelist takes the commit message through `-d`. Files that are not open are reported as an error naming them, instead of being skipped silently.
+- **Add / Delete** — "add to VCS" runs `p4 add`; a file removed from disk is recorded with `p4 reconcile -d`, because `p4 delete` needs the file to still exist.
+- **Rollback → `p4 revert -k`** — drops the open state and leaves the file on disk, the non-destructive form. The destructive `p4 revert` (restores depot content) stays in the tool window's **Revert (discard edits)…**, behind a confirmation. "Roll back modified without checkout" is deliberately a no-op: Perforce has no modified-but-unopened state.
+- **Revisions** — the before-side is `#have` and the after-side is the workspace file, so the IDE's own differ shows your edits against the synced copy with no `p4 print` round trip.
+
+### Changed
+
+- `p4 -x` argument-file plumbing extracted to `P4Args` and shared by the provider, commit, rollback and reconcile; written with LF line endings only and deleted in a `finally`.
+- VCS actions run inline on the platform's worker thread when that is where the platform called them, so the errors returned to the commit dialog are the real p4 errors; a call that arrives on the UI thread is queued instead, keeping the "no `p4` process on the UI thread" rule intact.
+- `build.ps1` now runs **94** checks (was 51): the new ones cover action→status mapping, revision comparison, depot↔local mapping with case and separator differences, `p4 opened` records, change→path extraction, and the argument file.
+
+### Still open
+
+- Gradle build with `verifyPlugin` / `signPlugin`.
+- A GUI pass of the tool window **and** the new VCS integration in a running IDE with `p4` installed.
+- No auto-checkout: editing a read-only file does not run `p4 edit` (`EditFileProvider` is not implemented), and a writable-but-unopened file — one left behind by **Revert (keep files)**, say — does not appear in Local Changes until you run **Reconcile…**.
+
 ## v0.2 (post-review, 2026-10-01)
 
 Fixes from a strict review; every p4-side behaviour re-verified live against r25.2. Not yet published.
@@ -31,9 +57,10 @@ Fixes from a strict review; every p4-side behaviour re-verified live against r25
 
 ### Still open
 
-- VCS-provider registration (native Local Changes / commit dialog).
 - Gradle build with `verifyPlugin` / `signPlugin`.
 - A GUI pass of the new dialogs in a running IDE.
+
+*(The VCS-provider registration this section listed was done in v0.3.)*
 
 ## v0.1 (Day-0 → Day-13 skeleton)
 
@@ -56,5 +83,5 @@ First internally verified build. Not yet published to the Marketplace.
 
 ### Known limitations
 
-- Not registered as the IDE's project VCS provider (v2).
+- Not registered as the IDE's project VCS provider (v2). *Done in v0.3.*
 - 30 s per-process timeout; no fstat caching; no background refresh scheduler.

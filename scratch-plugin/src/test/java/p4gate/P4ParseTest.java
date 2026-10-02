@@ -1,5 +1,13 @@
 package p4gate;
 
+import com.intellij.openapi.vcs.FilePath;
+import com.intellij.openapi.vcs.FileStatus;
+import com.intellij.openapi.vcs.LocalFilePath;
+import com.intellij.openapi.vcs.changes.Change;
+import com.intellij.openapi.vcs.history.VcsRevisionNumber;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -11,7 +19,7 @@ public final class P4ParseTest {
     private static int failures = 0;
     private static int checks = 0;
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
         json();
         tagged();
         info();
@@ -22,6 +30,12 @@ public final class P4ParseTest {
         setOutput();
         hints();
         isUnder();
+        status();
+        revision();
+        clientFiles();
+        openedFile();
+        changeArgs();
+        argsFile();
         System.out.println(checks + " checks, " + failures + " failures");
         System.exit(failures == 0 ? 0 : 1);
     }
@@ -161,5 +175,114 @@ public final class P4ParseTest {
         eq("same dir", true, P4Connect.isUnder("C:\\ws alice", "C:/ws alice"));
         eq("subdir, case-insensitive", true, P4Connect.isUnder("c:\\WS alice\\sub", "C:/ws alice/"));
         eq("sibling prefix is not inside", false, P4Connect.isUnder("C:\\ws alice2", "C:/ws alice"));
+    }
+
+    /** p4 action -> platform FileStatus: what the Local Changes view shows for each opened file. */
+    static void status() {
+        eq("add is new", FileStatus.ADDED, P4Status.of("add", true));
+        eq("branch is new", FileStatus.ADDED, P4Status.of("branch", false));
+        eq("import is new", FileStatus.ADDED, P4Status.of("import", true));
+        eq("move/add is new", FileStatus.ADDED, P4Status.of("move/add", true));
+        eq("delete is removed", FileStatus.DELETED, P4Status.of("delete", false));
+        eq("move/delete is removed", FileStatus.DELETED, P4Status.of("move/delete", true));
+        eq("purge is removed", FileStatus.DELETED, P4Status.of("purge", true));
+        eq("edit is modified", FileStatus.MODIFIED, P4Status.of("edit", true));
+        eq("action case and padding", FileStatus.MODIFIED, P4Status.of(" EDIT ", true));
+        eq("integrate is a merge", FileStatus.MERGE, P4Status.of("integrate", true));
+        eq("resolve is a merge", FileStatus.MERGE, P4Status.of("resolve", true));
+        eq("an unknown action is treated as a modification", FileStatus.MODIFIED, P4Status.of(null, true));
+        // opened but gone from the workspace: a different rollback action, so a different status
+        eq("modified file missing from disk", FileStatus.DELETED_FROM_FS, P4Status.of("edit", false));
+        eq("deleted stays deleted when gone", FileStatus.DELETED, P4Status.of("delete", false));
+        eq("added stays added when gone", FileStatus.ADDED, P4Status.of("add", false));
+    }
+
+    static void revision() {
+        eq("have prints as a revision spec", "have", P4RevisionNumber.HAVE.asString());
+        eq("a submitted changelist prints as its number", "12345", new P4RevisionNumber(12345).asString());
+        eq("a negative revision is treated as have", "have", new P4RevisionNumber(-1).asString());
+        eq("revisions compare by changelist", -1, new P4RevisionNumber(2).compareTo(new P4RevisionNumber(3)));
+        eq("revisions compare by changelist (2)", 1, new P4RevisionNumber(3).compareTo(new P4RevisionNumber(2)));
+        eq("equal revisions compare to 0", 0, new P4RevisionNumber(3).compareTo(new P4RevisionNumber(3)));
+        eq("have equals the 0 revision", true, P4RevisionNumber.HAVE.equals(new P4RevisionNumber(0)));
+        eq("different revisions are not equal", false, P4RevisionNumber.HAVE.equals(new P4RevisionNumber(4)));
+        eq("hashCode follows equals", new P4RevisionNumber(0).hashCode(), P4RevisionNumber.HAVE.hashCode());
+        // a revision number from another VCS can only be compared by its printed form
+        VcsRevisionNumber foreign = new VcsRevisionNumber() {
+            @Override
+            public String asString() { return "8"; }
+
+            @Override
+            public int compareTo(VcsRevisionNumber other) { return 0; }
+        };
+        eq("foreign revisions compare by printed form", 1, new P4RevisionNumber(9).compareTo(foreign));
+    }
+
+    /** p4 fstat records -> local paths, which is how an opened depot path becomes a file the IDE can show. */
+    static void clientFiles() {
+        List<P4ClientFile> files = P4ClientFile.parse(List.of(
+                Map.of("depotFile", "//depot/a.txt", "clientFile", "C:\\ws\\a.txt"),
+                Map.of("depotFile", "//depot/sub dir/c.txt", "clientFile", "C:\\ws\\sub dir\\c.txt"),
+                Map.of("depotFile", "//depot/not-in-view.txt"),
+                Map.of("clientFile", "C:\\ws\\orphan.txt")));
+        eq("records without both paths are dropped", 2, files.size());
+        eq("local path of a depot path", "C:\\ws\\sub dir\\c.txt", P4ClientFile.byDepot(files).get("//depot/sub dir/c.txt"));
+        eq("depot path of a local path, separators and case ignored",
+                List.of("//depot/sub dir/c.txt"), P4ClientFile.depotPathsOf(files, List.of("c:/WS/sub dir/c.txt")));
+        eq("a path p4 did not report maps to nothing", List.of(), P4ClientFile.depotPathsOf(files, List.of("C:\\elsewhere\\x.txt")));
+        eq("dirty paths keep their order and drop duplicates",
+                List.of("//depot/a.txt", "//depot/sub dir/c.txt"),
+                P4ClientFile.depotPathsOf(files, List.of("C:/ws/a.txt", "C:\\ws\\a.txt", "C:/ws/sub dir/c.txt")));
+    }
+
+    static void openedFile() {
+        P4Data.OpenedFile def = P4Data.openedFile(Map.of(
+                "depotFile", "//depot/b.txt", "clientFile", "//alice_ws/b.txt", "action", "edit", "change", "default", "type", "text"));
+        eq("the default changelist is 0", 0L, def.change());
+        eq("action is kept", "edit", def.action());
+        P4Data.OpenedFile numbered = P4Data.openedFile(Map.of("depotFile", "//depot/a.txt", "action", "add", "change", "12"));
+        eq("a numbered changelist keeps its id", 12L, numbered.change());
+        eq("a missing type is empty", "", numbered.type());
+        eq("a missing depot path is not a file", null, P4Data.openedFile(Map.of("action", "edit")));
+        eq("an unparsable changelist falls back to the default", 0L,
+                P4Data.openedFile(Map.of("depotFile", "//depot/a.txt", "change", "garbage")).change());
+    }
+
+    /** The local paths a platform change turns into, which is what p4 revert/submit are given. */
+    static void changeArgs() {
+        FilePath path = new LocalFilePath("C:/ws/a.txt", false);
+        FilePath other = new LocalFilePath("C:/ws/b.txt", false);
+        // CurrentContentRevision needs a running application, so both sides are read from a plain revision
+        Change modified = new Change(new P4ContentRevision(path, P4RevisionNumber.HAVE),
+                new P4ContentRevision(path, P4RevisionNumber.HAVE), FileStatus.MODIFIED);
+        eq("a modified file yields one path", List.of("C:/ws/a.txt"), P4Vcs.fileArgs(modified));
+        Change added = new Change(null, new P4ContentRevision(path, P4RevisionNumber.HAVE), FileStatus.ADDED);
+        eq("an added file yields the path it was added at", List.of("C:/ws/a.txt"), P4Vcs.fileArgs(added));
+        Change deleted = new Change(new P4ContentRevision(path, P4RevisionNumber.HAVE), null, FileStatus.DELETED);
+        eq("a deleted file yields the path it was deleted from", List.of("C:/ws/a.txt"), P4Vcs.fileArgs(deleted));
+        Change moved = new Change(new P4ContentRevision(path, P4RevisionNumber.HAVE),
+                new P4ContentRevision(other, P4RevisionNumber.HAVE), FileStatus.MODIFIED);
+        eq("a change spanning two paths yields both", List.of("C:/ws/a.txt", "C:/ws/b.txt"), P4Vcs.fileArgs(moved));
+    }
+
+    /** The argument file p4 -x reads: one argument per line, or paths with spaces would be split. */
+    static void argsFile() throws Exception {
+        Path dir = Files.createTempDirectory("p4args-test");
+        try {
+            String file = P4Args.file(dir.toString(), "p4ii-test", List.of("C:/ws/a.txt", "C:/ws/sub dir/b.txt", ""));
+            eq("one argument per line, empty argument quoted",
+                    "C:/ws/a.txt\nC:/ws/sub dir/b.txt\n\"\"\n", Files.readString(Path.of(file)));
+            P4Args.delete(file);
+            eq("the argument file is removed afterwards", false, Files.exists(Path.of(file)));
+        } finally {
+            Files.deleteIfExists(dir);
+        }
+        // an unusable workdir must not lose the arguments
+        String fallback = P4Args.file("Z:\\no such dir", "p4ii-test", List.of("//depot/a.txt"));
+        try {
+            eq("falls back to the system temp dir", "//depot/a.txt\n", Files.readString(Path.of(fallback)));
+        } finally {
+            P4Args.delete(fallback);
+        }
     }
 }

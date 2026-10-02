@@ -40,6 +40,15 @@ public final class P4Project {
 
     public P4Cli cli() { return cli; }
 
+    /** The p4 command line of this project, or null when no executable is configured. */
+    public static P4Cli openCli(Project project) {
+        P4Project service = get(project);
+        if (service == null) return null;
+        P4Cli cli = service.cli();
+        String exe = cli.executable();
+        return exe == null || exe.isBlank() ? null : cli;
+    }
+
     /** Persists executable + working dir for this project; keeps the current env override. */
     public void configure(String executable, String workdir) {
         PropertiesComponent props = PropertiesComponent.getInstance(project);
