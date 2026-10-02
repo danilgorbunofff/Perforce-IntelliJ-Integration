@@ -39,14 +39,16 @@ Users report the official plugin freezing on real workspaces. We do not know its
 | Resolve after a sync conflict | **Sync + auto-merge** merges everything without conflicting chunks; for a file still in conflict, **Accept theirs… / Accept yours…** act on that one file and say what will be discarded before doing it |
 | Keep generated files out of Perforce | **Ignore file…** writes the rule into the ignore file p4 actually reads (your `P4IGNORE`, else `p4ignore.txt`) and verifies it took effect; for a file opened for add it first un-adds it (file stays on disk) |
 | See your streams | **Streams tab** — parent hierarchy, your client's stream marked |
-| Work the way the IDE expects | The plugin **is** the project's VCS provider: the native **Local Changes** view, the **commit dialog** (→ `p4 submit`) and **Rollback** (→ `p4 revert -k`) all run on `p4 opened` / `p4 fstat`, with no directory scan behind them |
+| Work the way the IDE expects | The plugin **is** the project's VCS provider. The native **Local Changes** view runs on `p4 opened`, with no directory scan behind it. The diff's left side is the real `#have` depot content. The **commit dialog** submits exactly the files you selected, with your message. **Rollback** is `p4 revert`. Typing into a read-only file runs `p4 edit`. Renames and moves, including refactorings, become real `p4 move`s |
 
-The p4 behaviour behind every row was verified live against a local Perforce server (Helix Core r25.2), including a real same-line merge conflict between two clients; the confirmation dialogs themselves still need a pass in a running IDE before release. The VCS provider is the exception: it is compiled and unit-tested against the 2025.3 platform, but it has never been driven by a click or a real `p4`, because the build machine has neither.
+Every row is covered by automated tests that run against a live Perforce server (Helix Core r25.2), including a real out-of-date submit between two clients. The VCS integration also runs inside a headless IntelliJ IDEA in tests, and the JetBrains Plugin Verifier reports the plugin compatible with IDEA 2025.3 through 2026.2.3. The Swing dialogs themselves still need one manual click-through before release.
 
 ## What v1 does not do (yet)
 
-- **No automatic `p4 edit` when you start typing**, and a writable-but-unopened file (say, one left behind by *Revert (keep files)*) stays invisible in Local Changes until you run **Reconcile…**. Both are unverified-by-design gaps until the GUI pass.
+- A file edited outside the IDE without `p4 edit` (writable but unopened) stays invisible in Local Changes until you run **Reconcile…**. That is how Perforce itself sees it, and the reason a directory scan is never needed.
+- Perforce changelists are not mirrored as IDE changelists (the tool window shows them); no unshelve or history view yet.
 - No merge/branch automation, no code review integration, no CI integration. Those are different products.
+- It replaces JetBrains' bundled Perforce plugin rather than running beside it: disable that one (IntelliJ IDEA 2025.3 bundles it), and your existing project mappings carry over.
 
 ## Pricing
 

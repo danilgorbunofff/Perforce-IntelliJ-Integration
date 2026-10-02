@@ -3,9 +3,14 @@ package p4gate;
 import com.intellij.ide.util.PropertiesComponent;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.components.Service;
+import com.intellij.openapi.diagnostic.Logger;
+import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.progress.Task;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.ui.Messages;
+import com.intellij.openapi.vcs.changes.VcsDirtyScopeManager;
+import kotlinx.coroutines.CoroutineScope;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.Map;
@@ -18,13 +23,17 @@ import java.util.function.Consumer;
 public final class P4Project {
     private static final String KEY_EXE = "p4gate.executable";
     private static final String KEY_DIR = "p4gate.workdir";
+    private static final Logger LOG = Logger.getInstance(P4Project.class);
 
     private final Project project;
+    private final CoroutineScope scope;
     private final AtomicBoolean busy = new AtomicBoolean();
     private volatile P4Cli cli;
 
-    public P4Project(Project project) {
+    /** The platform injects the scope: cancelled when the project closes or the plugin is unloaded. */
+    public P4Project(Project project, CoroutineScope scope) {
         this.project = project;
+        this.scope = scope;
         PropertiesComponent props = PropertiesComponent.getInstance(project);
         String exe = props.getValue(KEY_EXE, System.getProperty("p4.executable", "p4"));
         String base = project.getBasePath();
@@ -37,6 +46,9 @@ public final class P4Project {
     }
 
     public Project project() { return project; }
+
+    /** For components that live as long as the project, e.g. the VCS file listener. */
+    public CoroutineScope scope() { return scope; }
 
     public P4Cli cli() { return cli; }
 
@@ -62,6 +74,11 @@ public final class P4Project {
         cli = new P4Cli(cli.executable(), cli.workdir(), env);
     }
 
+    /** After p4 changed workspace state outside the VCS actions (tool window): Local Changes re-reads p4. */
+    public void vcsDirty() {
+        if (!project.isDisposed()) VcsDirtyScopeManager.getInstance(project).markEverythingDirty();
+    }
+
     /** Runs on the EDT unless the project has been closed meanwhile. */
     public void ui(Runnable r) {
         ApplicationManager.getApplication().invokeLater(r, project.getDisposed());
@@ -80,7 +97,15 @@ public final class P4Project {
             @Override
             public void run(@NotNull ProgressIndicator indicator) {
                 indicator.setIndeterminate(true);
-                work.accept(indicator);
+                try {
+                    work.accept(indicator);
+                } catch (ProcessCanceledException e) {
+                    throw e;
+                } catch (RuntimeException e) {
+                    // a failure is shown to the user, never left as an IDE error report with a frozen panel
+                    LOG.warn(title + " failed", e);
+                    ui(() -> Messages.showErrorDialog(project, title + " failed:\n" + e, "Perforce"));
+                }
             }
 
             @Override

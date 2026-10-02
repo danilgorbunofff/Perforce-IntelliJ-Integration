@@ -119,7 +119,7 @@ public final class P4Data {
     public static String effectiveSetting(P4Cli cli, String name) {
         P4Cli.Result r = cli.run("set", "-q", name);
         if (!r.ok()) return null;
-        return P4Env.parseSet(r.out()).get(name);
+        return P4Env.parseSetQuiet(r.out()).get(name);
     }
 
     /** The client name p4 was asked to use: `p4 info` only says "*unknown*" for a missing client.
@@ -142,38 +142,13 @@ public final class P4Data {
                 r.getOrDefault("userName", ""), r.getOrDefault("serverAddress", ""), r.getOrDefault("serverVersion", ""), null);
     }
 
-    /** Opened files among the given depot paths, deduplicated: `p4 opened -x <file>` is the only source. */
-    public static Listing<OpenedFile> openedFiles(P4Cli cli, List<String> depotPaths) {
-        if (depotPaths.isEmpty()) return new Listing<>(List.of(), null);
-        String args = P4Args.file(cli.workdir(), "p4ii-opened", depotPaths);
-        try {
-            P4Cli.Tagged t = cli.tagged(P4Cli.QUERY_TIMEOUT, () -> false, "opened", "-x", args);
-            if (t.error() != null) return Listing.failed(t.error());
-            Map<String, OpenedFile> files = new LinkedHashMap<>();
-            for (Map<String, String> r : t.records()) {
-                OpenedFile f = openedFile(r);
-                if (f != null) files.put(f.depotFile(), f);
-            }
-            return new Listing<>(List.copyOf(files.values()), null);
-        } finally {
-            P4Args.delete(args);
-        }
-    }
-
     /** One `opened` record; null when it carries no depot path. "default" is the default changelist, id 0. */
     static OpenedFile openedFile(Map<String, String> r) {
         String depot = r.get("depotFile");
         if (depot == null || depot.isBlank()) return null;
         String change = r.getOrDefault("change", "default");
-        long cl = 0;
-        if (!change.equals("default")) {
-            try {
-                cl = Long.parseLong(change.strip());
-            } catch (NumberFormatException e) {
-                cl = 0;
-            }
-        }
-        return new OpenedFile(depot, r.getOrDefault("clientFile", ""), r.getOrDefault("action", "?"), cl, r.getOrDefault("type", ""));
+        return new OpenedFile(depot, r.getOrDefault("clientFile", ""), r.getOrDefault("action", "?"),
+                P4OpenFile.changeId(change), r.getOrDefault("type", ""));
     }
 
     /** Default changelist first, then numbered changelists in p4's order (newest first); files grouped by change. */
@@ -186,7 +161,8 @@ public final class P4Data {
         List<Change> result = new ArrayList<>();
         result.add(new Change(0, "", "default", filesByCl.getOrDefault(0L, List.of())));
         for (Map<String, String> r : changeRecords) {
-            long id = Long.parseLong(r.get("change"));
+            long id = parseLongOr(r.get("change"), 0);
+            if (id <= 0) continue; // not a changelist record
             result.add(new Change(id, r.getOrDefault("user", ""), firstLine(r.getOrDefault("desc", "")),
                     filesByCl.getOrDefault(id, List.of())));
         }
@@ -196,7 +172,9 @@ public final class P4Data {
     static List<SubmittedChange> parseSubmitted(List<Map<String, String>> records) {
         List<SubmittedChange> out = new ArrayList<>();
         for (Map<String, String> r : records) {
-            out.add(new SubmittedChange(Long.parseLong(r.get("change")), parseLongOr(r.get("time"), 0),
+            long id = parseLongOr(r.get("change"), 0);
+            if (id <= 0) continue; // not a changelist record
+            out.add(new SubmittedChange(id, parseLongOr(r.get("time"), 0),
                     r.getOrDefault("user", ""), r.getOrDefault("client", ""), firstLine(r.getOrDefault("desc", ""))));
         }
         out.sort((a, b) -> Long.compare(b.id(), a.id()));

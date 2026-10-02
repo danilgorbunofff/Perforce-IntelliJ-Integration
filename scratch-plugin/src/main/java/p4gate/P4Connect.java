@@ -4,12 +4,14 @@ import com.intellij.ui.components.JBScrollPane;
 
 import javax.swing.*;
 import java.awt.*;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.SortedMap;
+import java.util.regex.Pattern;
 
 /**
  * The "why can't I connect" panel (README 5.1, rows 1-2 — the #1 reason users bounce).
@@ -18,6 +20,10 @@ import java.util.SortedMap;
  */
 public final class P4Connect {
     public enum Verdict { READY, NOT_READY, NOT_CONNECTED }
+
+    /** Windows CreateProcess: error=2 is "file not found" (the executable), error=267 "directory name is invalid". */
+    private static final Pattern MISSING_EXE = Pattern.compile("error=2(?!\\d)");
+    private static final Pattern MISSING_DIR = Pattern.compile("error=267(?!\\d)");
 
     /** Full diagnosis: rendered report, verdict, and the first failing step (null when READY). */
     public record Report(String text, Verdict verdict, String firstFailure) { }
@@ -110,6 +116,11 @@ public final class P4Connect {
         b.append("    workspace dir: ").append(cli.workdir()).append('\n');
         b.append("    every plugin call runs as: ").append(String.join(" ", cli.commandLine("<command>"))).append('\n');
         b.append("    (-d makes p4 resolve P4CONFIG from the workspace dir, not from $PWD or the IDE's own directory)\n\n");
+        if (cli.workdir() == null || cli.workdir().isBlank() || !Files.isDirectory(Path.of(cli.workdir()))) {
+            String first = "[1] the workspace dir '" + cli.workdir() + "' does not exist — " + hint("workspace dir does not exist");
+            b.append("    ").append(first).append("\n\nVERDICT: NOT CONNECTED — first failing step ").append(first).append('\n');
+            return new Report(b.toString(), Verdict.NOT_CONNECTED, first);
+        }
 
         SortedMap<String, String> env = P4Env.processEnv();
         b.append("[2] IDE process environment:\n");
@@ -253,7 +264,10 @@ public final class P4Connect {
     /** Targeted hints mapped from p4's (or the OS's) own error text. Order matters: most specific first. */
     static String hint(String output) {
         String t = output.toLowerCase(java.util.Locale.ROOT);
-        if (t.contains("cannot run program") || t.contains("createprocess error=2") || t.contains("cannot find the file specified")
+        // before the executable check: a missing cwd is CreateProcess error=267, which also says "cannot run program"
+        if (t.contains("workspace dir does not exist") || MISSING_DIR.matcher(t).find() || t.contains("directory name is invalid"))
+            return "set 'workspace dir' to an existing directory inside your Perforce workspace";
+        if (t.contains("cannot run program") || MISSING_EXE.matcher(t).find() || t.contains("cannot find the file specified")
                 || t.contains("no such file or directory") || t.contains("not recognized"))
             return "the p4 executable itself was not found — set the full path in 'p4 executable' (e.g. C:\\Program Files\\Perforce\\p4.exe)";
         if (t.contains("authenticity of") || t.contains("p4 trust") || t.contains("fingerprint"))

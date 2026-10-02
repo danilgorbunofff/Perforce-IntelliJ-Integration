@@ -1,16 +1,42 @@
 <idea-plugin>
-    <id>dev.perforce-intellij-integration.day0-skeleton</id>
-    <name>Perforce IntelliJ Integration (skeleton)</name>
+    <!-- The id is permanent once published to the Marketplace. -->
+    <id>dev.perforce-intellij-integration</id>
+    <name>Perforce Integration</name>
+    <!-- Not "Perforce IntelliJ Integration": the Marketplace rejects names containing "IntelliJ" (TemplateWordInPluginName). -->
     <vendor>p4ii</vendor>
-    <!-- Compiled and verified against 2025.3 (build 253) only; no upper bound claimed until verifyPlugin runs on newer builds. -->
-    <idea-version since-build="253"/>
-    <description>Skeleton build: p4 CLI changelist tree, edit/add/submit/shelve/revert/resolve/reconcile, a connect-and-explain diagnosis, and the project's Perforce VCS provider (native Local Changes, commit and rollback). Not a release.</description>
+    <!-- since/until build and version are set by the Gradle build (build.gradle.kts / gradle.properties). -->
+
+    <description><![CDATA[
+<p>Associate your IDE project with Perforce (<code>p4</code> / Helix Core) through the built-in version control.
+It connects, and it does not freeze.</p>
+<ul>
+  <li><b>Connect-and-explain</b>: a diagnosis that runs <code>p4</code> exactly like the plugin does and names the
+      first failing step &mdash; missing executable, unreachable server, unknown or host-locked client, not logged in,
+      a P4CONFIG file p4 never reads.</li>
+  <li><b>Native Local Changes, Commit and Rollback</b>, fed by <code>p4 opened</code> &mdash; a constant number of
+      <code>p4</code> calls, never a directory scan, never one call per file.</li>
+  <li><b>Auto-checkout</b>: typing into a read-only file runs <code>p4 edit</code>.</li>
+  <li>Pending and submitted changelists, submit, shelve, revert, diff, annotate, reconcile, sync with auto-merge,
+      conflict resolution, streams and ignore rules.</li>
+</ul>
+<p>Requires the <code>p4</code> command-line client. Replaces JetBrains' bundled Perforce plugin, which must be
+disabled (the IDE offers to do it).</p>
+]]></description>
+
+    <change-notes><![CDATA[
+<p>0.4.0: the VCS integration verified against a live Helix Core server &mdash; real <code>#have</code> diffs,
+commit of exactly the selected files with your message, Rollback restores depot content, auto-checkout,
+file names with <code>@ # % *</code>.</p>
+]]></change-notes>
+
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.modules.vcs</depends>
+    <!-- Both register the VCS named "Perforce" (on purpose: existing vcs.xml mappings carry over). -->
+    <incompatible-with>PerforceDirectPlugin</incompatible-with>
 
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow id="Perforce P4" factoryClass="p4gate.P4ToolWindowFactory" anchor="right"/>
-        <vcs name="Perforce" vcsClass="p4gate.P4Vcs" displayName="Perforce" administrativeAreaName=".p4config"/>
+        <vcs name="Perforce" vcsClass="p4gate.P4Vcs" displayName="Perforce"/>
         <vcsRootChecker implementation="p4gate.P4RootChecker"/>
     </extensions>
 </idea-plugin>

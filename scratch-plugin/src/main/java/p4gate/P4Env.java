@@ -8,6 +8,8 @@ import java.util.List;
 import java.util.Optional;
 import java.util.SortedMap;
 import java.util.TreeMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** Collects every place a p4 connection's settings can come from: this process's environment, `p4 set` (the OS-level defaults, e.g. Windows registry), and P4CONFIG files found above the workspace directory. */
 public final class P4Env {
@@ -42,8 +44,21 @@ public final class P4Env {
         return out;
     }
 
+    /** p4's source annotations after a `p4 set` value: (set), (set -S svc), (config 'file'), (enviro), (noconfig). */
+    private static final Pattern ANNOTATION =
+            Pattern.compile("\\s+\\((?:set(?: -S [^)]*)?|config\\s+'[^']*'\\s*|enviro|registry|noconfig)\\)\\s*$");
+
     /** Parse lines like `P4PORT=127.0.0.1:1666 (set)` / `P4CONFIG=p4config.txt (set) (config 'noconfig')` — p4 appends one or more annotation groups after the value. */
     public static SortedMap<String, String> parseSet(String p4SetOutput) {
+        return parse(p4SetOutput, true);
+    }
+
+    /** `p4 set -q` output: bare values, no annotations — so nothing is stripped (e.g. `C:\Program Files (x86)\...`). */
+    public static SortedMap<String, String> parseSetQuiet(String p4SetOutput) {
+        return parse(p4SetOutput, false);
+    }
+
+    private static SortedMap<String, String> parse(String p4SetOutput, boolean annotated) {
         SortedMap<String, String> out = new TreeMap<>();
         for (String line : p4SetOutput.split("\n")) {
             String t = line.trim(); // also removes trailing \r from CRLF output
@@ -52,16 +67,10 @@ public final class P4Env {
             String key = t.substring(0, eq).trim();
             if (!KEYS.contains(key)) continue;
             String val = t.substring(eq + 1).trim();
-            // strip trailing p4 annotations (" (set)", " (config 'noconfig')", " (env)") until none remain
-            for (int i = 0; i < 3; i++) {
-                if (val.endsWith(")")) {
-                    int paren = val.lastIndexOf(" (");
-                    if (paren > 0) {
-                        val = val.substring(0, paren).trim();
-                        continue;
-                    }
-                }
-                break;
+            while (annotated) {
+                Matcher m = ANNOTATION.matcher(val);
+                if (!m.find()) break;
+                val = val.substring(0, m.start()).trim();
             }
             if (val.length() >= 2 && val.charAt(0) == '"' && val.charAt(val.length() - 1) == '"') {
                 val = val.substring(1, val.length() - 1);

@@ -2,21 +2,22 @@ package p4gate;
 
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.progress.EmptyProgressIndicator;
+import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.progress.ProgressIndicator;
-import com.intellij.openapi.progress.Task;
+import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vcs.VcsException;
-import org.jetbrains.annotations.NotNull;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
- * Runs the Perforce commands behind the platform's VCS actions off the UI thread.
- *
- * The platform calls {@code commit} and the two schedule methods from a worker thread and reads the errors
- * they return, so the work runs inline there — that way a failed submit is reported to the user. On the UI
- * thread (any call the platform makes from the EDT) the work is queued instead, because no p4 process may
- * ever run on the UI thread.
+ * Runs the p4 work behind a platform VCS action and returns its errors only once the work is DONE, so the
+ * platform reports a failed submit/edit/revert instead of a success.
+ * On a worker thread (where the platform calls commit and rollback) the work runs inline under the caller's
+ * progress indicator. On the UI thread it runs under a modal, synchronous progress dialog: no p4 process ever
+ * runs on the UI thread, and the caller still gets the real result.
  */
 final class P4Sync {
 
@@ -28,22 +29,23 @@ final class P4Sync {
         void run(P4Cli cli, ProgressIndicator indicator) throws VcsException;
     }
 
-    /** Queues {@code work} as a background task; anything it throws lands in {@code errors}, never in the IDE log. */
-    static void background(Project project, String title, boolean cancellable, List<VcsException> errors, Work work) {
-        if (!ApplicationManager.getApplication().isDispatchThread()) {
-            run(project, errors, work, new EmptyProgressIndicator());
-            return;
+    static List<VcsException> run(Project project, String title, boolean cancellable, Work work) {
+        List<VcsException> errors = Collections.synchronizedList(new ArrayList<>());
+        if (ApplicationManager.getApplication().isDispatchThread()) {
+            ProgressManager.getInstance().runProcessWithProgressSynchronously(
+                    () -> execute(project, errors, work, current()), title, cancellable, project);
+        } else {
+            execute(project, errors, work, current());
         }
-        new Task.Backgroundable(project, title, cancellable) {
-            @Override
-            public void run(@NotNull ProgressIndicator indicator) {
-                P4Sync.run(project, errors, work, indicator);
-            }
-        }.queue();
+        return new ArrayList<>(errors);
     }
 
-    private static void run(Project project, List<VcsException> errors, Work work, ProgressIndicator indicator) {
-        indicator.setIndeterminate(true);
+    private static ProgressIndicator current() {
+        ProgressIndicator indicator = ProgressManager.getInstance().getProgressIndicator();
+        return indicator != null ? indicator : new EmptyProgressIndicator();
+    }
+
+    private static void execute(Project project, List<VcsException> errors, Work work, ProgressIndicator indicator) {
         P4Cli cli = P4Project.openCli(project);
         if (cli == null) {
             errors.add(new VcsException("No p4 executable is configured for this project."));
@@ -53,6 +55,8 @@ final class P4Sync {
             work.run(cli, indicator);
         } catch (VcsException e) {
             errors.add(e);
+        } catch (ProcessCanceledException e) {
+            errors.add(new VcsException("Cancelled."));
         } catch (RuntimeException e) {
             errors.add(new VcsException(e));
         }

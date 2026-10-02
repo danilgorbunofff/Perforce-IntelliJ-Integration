@@ -1,6 +1,58 @@
 # Release notes
 
+## v0.4 (reverification, 2026-10-02)
+
+A full review of v0.3 against a **live** Helix Core r25.2 server found that its VCS provider could not work: it had only ever been compiled and unit-tested. All of it is fixed below, and every fix is now covered by automated tests that run against a real p4d and inside a headless IntelliJ IDEA 2025.3.
+
+### Fixed — the VCS provider (v0.3) did not work
+
+- **Every multi-file p4 call was malformed.** `-x <argfile>` was passed *after* the command name, where p4 reads it as a command flag. `p4 opened -x` means "exclusive locks" ("only supported in a distributed configuration"), and `fstat … -x` is "Invalid option: -x". **Local Changes was always empty**, and commit, rollback, add and delete all failed. Global options now always precede the command.
+- **Commit could not submit.** `p4 submit -c N` takes no file arguments, and the commit message was dropped for numbered changelists. Commit now submits exactly the selected files with the typed message: new changelist → `reopen` → `submit -c`. A refused submit leaves the files, with the description, in a named pending changelist.
+- **Every diff was empty.** The "before" side read the edited file on disk; Perforce keeps no pristine copy. It is now `p4 print -q <file>#have`, with binary filetypes shown as binary and BOM-aware decoding.
+- **The root checker could never load.** It was an application-level extension with a constructor parameter. Now it has a no-arg constructor and treats a directory holding a P4CONFIG file as the root.
+- **VCS name clash** with JetBrains' bundled plugin (both register `Perforce`). The name is kept on purpose, so `vcs.xml` mappings carry over, and plugin.xml declares `<incompatible-with>PerforceDirectPlugin`.
+- **Dirty-scope refresh lost files** (recursively dirty directories were ignored) and could scan whole depot subtrees. Local Changes now always costs two p4 calls, filtered by the scope.
+- **A possible refresh loop.** Argument files were written into the workspace, and each one fired a VFS event that re-ran the change provider. They now go to the system temp dir.
+- **Errors were lost on the UI thread.** The error list was returned before the work ran. VCS actions now return p4's real errors, running under modal progress when called on the UI thread.
+- **Missing files.** An opened file deleted from disk is now reported as locally deleted, and its rollback restores it. It used to be `revert -k`, which left the file missing.
+
+### Changed
+
+- **Rollback = `p4 revert`** (restores depot content), matching the platform's Rollback dialog. `revert -k` stays in the tool window as **Revert (keep files)**.
+- **Plugin name: "Perforce Integration".** The Marketplace rejects new plugin names containing "IntelliJ" (Plugin Verifier rule `TemplateWordInPluginName`, since 2024-03-26). The id is `dev.perforce-intellij-integration`.
+- **Build: Gradle + IntelliJ Platform Gradle Plugin 2.19.** This adds `buildPlugin`, `verifyPlugin` (2025.3, 2026.1.5, 2026.2.3: compatible, no internal or experimental API) and `runIde`. `build.ps1` is gone.
+
+### Added
+
+- **Auto-checkout** (`EditFileProvider`): typing into a read-only file runs `p4 edit`.
+- **IDE file operations follow into Perforce** (`VcsVFSListener`):
+  - a rename or move (including refactorings) becomes `p4 edit -k` + one `p4 -b 2 -x <pairs> move -k`;
+  - a deleted file becomes `reconcile -d` (or `revert` for a file only opened for add);
+  - a created file becomes `p4 add -f`, except files P4IGNORE excludes.
+- **File names with `@ # % *`** (e.g. `icon@2x.png`) work everywhere: escaped for p4, or passed with `-f`. Reconcile's preview used to skip them silently.
+- Shelving a changelist that is already shelved asks, then replaces the shelf (`shelve -f`).
+- Tool-window operations also refresh the IDE's Local Changes.
+
+### Fixed — tool window and diagnosis
+
+- A missing **workspace dir** was diagnosed as "p4 executable not found": `CreateProcess error=267` matched the substring `error=2`. It is now checked first and named.
+- `p4 set -q` values containing parentheses (`C:\Program Files (x86)\…`) were truncated. Only real p4 annotations are stripped now.
+- Unparsable records no longer crash a refresh, and any unexpected failure in a background task is shown as a message instead of an IDE error report with a frozen panel.
+
+### Tests
+
+- **26 unit tests** (parsers, argv construction, escaping, change mapping, submit spec, hints).
+- **28 live tests** against a throwaway p4d (rsh mode, no port), run when `P4_BIN` is set.
+- **9 headless in-IDE tests**: plugin loading, root detection, Local Changes, `#have` diff, commit, rollback, a locally deleted file, auto-checkout, and IDE rename / create / delete.
+
+### Still open
+
+- A manual click-through of the tool window and dialogs in a running IDE (`./gradlew runIde`). The VCS wiring itself is covered by the headless platform tests.
+- Paid licensing (product descriptor), which needs the Marketplace product code.
+
 ## v0.3 (VCS provider, 2026-10-02)
+
+> **Superseded by v0.4.** The v0.3 VCS provider did not work against a real server; see v0.4's "Fixed" list.
 
 The plugin is now the IDE's Perforce VCS provider: **Local Changes**, the **commit dialog** and **Rollback** are wired to `p4`. Compiled and tested against 2025.3 (94 parser/logic checks, 0 failures). The provider itself has not yet been exercised in a running IDE with a real `p4` — see *Still open*.
 

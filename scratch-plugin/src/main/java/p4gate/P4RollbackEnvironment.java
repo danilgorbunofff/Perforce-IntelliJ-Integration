@@ -5,7 +5,6 @@ import com.intellij.openapi.vcs.VcsException;
 import com.intellij.openapi.vcs.changes.Change;
 import com.intellij.openapi.vcs.rollback.RollbackEnvironment;
 import com.intellij.openapi.vcs.rollback.RollbackProgressListener;
-import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
 import org.jetbrains.annotations.NotNull;
 
@@ -13,9 +12,10 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * The platform's Rollback action: p4 revert -k, which drops the changelist entry and keeps the file as it is
- * on disk. That is what "rollback" means for a Perforce workspace — the user's edits are never thrown away
- * without being asked (the tool window's Discard is the destructive one, behind a confirmation).
+ * The platform's Rollback action: {@code p4 revert}, which drops the open state and restores the depot content,
+ * exactly what the platform's own Rollback confirmation tells the user. A file deleted from disk is restored the
+ * same way. Files opened for add stay on disk, unopened. The non-destructive {@code revert -k} stays in the
+ * tool window as "Revert (keep files)".
  */
 final class P4RollbackEnvironment implements RollbackEnvironment {
 
@@ -32,7 +32,7 @@ final class P4RollbackEnvironment implements RollbackEnvironment {
 
     @Override
     public void rollbackChanges(@NotNull List<? extends Change> changes, @NotNull List<VcsException> errors,
-                               @NotNull RollbackProgressListener listener) {
+                                @NotNull RollbackProgressListener listener) {
         List<String> paths = new ArrayList<>();
         for (Change change : changes) {
             for (String path : P4Vcs.fileArgs(change)) {
@@ -53,36 +53,23 @@ final class P4RollbackEnvironment implements RollbackEnvironment {
         revert(paths, errors, listener);
     }
 
-    /** Perforce has no checked-out flag to restore: a modified file is simply re-synced by the user. */
+    /** Never reported: the change provider lists opened files only, and Perforce has no "modified, not opened" state. */
     @Override
     public void rollbackModifiedWithoutCheckout(@NotNull List<? extends VirtualFile> files,
                                                 @NotNull List<? super VcsException> errors,
                                                 @NotNull RollbackProgressListener listener) {
     }
 
-    /** `p4 revert -k` reverts the listed files from whichever changelist holds them, so no lookup is needed. */
     private void revert(List<String> paths, List<? super VcsException> errors, RollbackProgressListener listener) {
         if (paths.isEmpty()) return;
-        P4Cli cli = P4Project.openCli(vcs.getProject());
-        if (cli == null) {
-            errors.add(new VcsException("No p4 executable is configured for this project."));
-            return;
-        }
         listener.determinate();
-        String args = P4Args.file(cli.workdir(), "p4ii-revert", paths);
-        try {
-            P4Cli.Tagged result = cli.tagged(null, () -> {
+        errors.addAll(P4Sync.run(vcs.getProject(), "Perforce: revert", true, (cli, indicator) -> {
+            String error = P4Ops.revert(cli, paths, () -> {
                 listener.checkCanceled();
                 return false;
-            }, "revert", "-k", "-x", args);
-            if (result.error() != null) errors.add(new VcsException(result.error()));
-        } finally {
-            P4Args.delete(args);
-        }
-        LocalFileSystem vfs = LocalFileSystem.getInstance();
-        for (String path : paths) {
-            VirtualFile file = vfs.refreshAndFindFileByPath(path);
-            if (file != null) file.refresh(false, false);
-        }
+            });
+            if (error != null) throw new VcsException(error);
+        }));
+        P4Vcs.refresh(vcs.getProject(), paths);
     }
 }

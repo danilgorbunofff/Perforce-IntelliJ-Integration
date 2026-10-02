@@ -3,7 +3,6 @@ package p4gate;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.vcs.FilePath;
 import com.intellij.openapi.vcs.FileStatus;
-import com.intellij.openapi.vcs.LocalFilePath;
 import com.intellij.openapi.vcs.VcsException;
 import com.intellij.openapi.vcs.changes.Change;
 import com.intellij.openapi.vcs.changes.ChangeListManagerGate;
@@ -12,19 +11,26 @@ import com.intellij.openapi.vcs.changes.ChangelistBuilder;
 import com.intellij.openapi.vcs.changes.ContentRevision;
 import com.intellij.openapi.vcs.changes.CurrentContentRevision;
 import com.intellij.openapi.vcs.changes.VcsDirtyScope;
+import com.intellij.vcsUtil.VcsUtil;
 import org.jetbrains.annotations.NotNull;
 
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 /**
- * Feeds the platform's Local Changes view from the two calls the plugin already trusts: {@code p4 opened}
- * says what the workspace holds, {@code p4 fstat} says which local path that depot path maps to. Nothing is
- * inferred from a directory scan, so a file the user never opened can never appear as changed.
+ * Feeds the platform's Local Changes view from the files p4 says are open in this client ({@link P4OpenFile#all}:
+ * two p4 spawns, whatever the size of the workspace or of the dirty scope). Nothing is inferred from a directory
+ * scan, so a file the user never opened can never appear as changed. The platform's dirty scope only selects
+ * which of those files are reported: every reported path must belong to it.
  */
 final class P4ChangeProvider implements ChangeProvider {
 
@@ -44,93 +50,72 @@ final class P4ChangeProvider implements ChangeProvider {
     public void getChanges(@NotNull VcsDirtyScope scope, @NotNull ChangelistBuilder builder,
                            @NotNull ProgressIndicator progress, @NotNull ChangeListManagerGate gate)
             throws VcsException {
-        progress.setIndeterminate(true);
         progress.setText("Collecting Perforce changes...");
-
         P4Cli cli = P4Project.openCli(vcs.getProject());
-        if (cli == null) {
-            throw new VcsException("No p4 executable is configured for this project.");
-        }
+        if (cli == null) throw new VcsException("No p4 executable is configured for this project.");
 
-        List<P4ClientFile> mapped;
-        List<P4Data.OpenedFile> opened;
-        if (scope.wasEveryThingDirty()) {
-            // the whole workspace was invalidated: `p4 opened` (this client only) is small and complete
-            P4Cli.Tagged result = cli.tagged(P4Cli.QUERY_TIMEOUT, () -> false, "opened");
-            if (result.error() != null) throw new VcsException(result.error());
-            opened = openedFiles(result);
-            mapped = clientFiles(cli, depotFiles(opened));
-        } else {
-            List<String> dirty = localPaths(scope);
-            if (dirty.isEmpty()) return;
-            mapped = clientFiles(cli, dirty);
-            List<String> depotPaths = P4ClientFile.depotPathsOf(mapped, dirty);
-            if (depotPaths.isEmpty()) return;
-            P4Data.Listing<P4Data.OpenedFile> listing = P4Data.openedFiles(cli, depotPaths);
-            if (listing.error() != null) throw new VcsException(listing.error());
-            opened = listing.items();
-        }
-        if (opened.isEmpty()) return;
+        P4Data.Listing<P4OpenFile> opened = P4OpenFile.all(cli, progress::isCanceled);
+        progress.checkCanceled();
+        if (opened.error() != null) throw new VcsException("Perforce: " + opened.error());
 
-        Map<String, String> localByDepot = P4ClientFile.byDepot(mapped);
-        for (P4Data.OpenedFile file : opened) {
+        Supplier<P4Cli> p4 = () -> P4Project.openCli(vcs.getProject());
+        for (Entry e : plan(opened.items(), P4ChangeProvider::exists)) {
             progress.checkCanceled();
-            String local = localByDepot.get(file.depotFile());
-            if (local == null) continue;
-            FilePath path = new LocalFilePath(local, false);
-            FileStatus status = P4Status.of(file.action(), exists(path));
-            ContentRevision before = status == FileStatus.ADDED ? null : new P4ContentRevision(path, P4RevisionNumber.HAVE);
-            ContentRevision after = status == FileStatus.DELETED || status == FileStatus.DELETED_FROM_FS
-                    ? null : CurrentContentRevision.create(path);
-            builder.processChange(new Change(before, after, status), vcs.getKeyInstanceMethod());
-        }
-    }
-
-    /** Local paths of everything the platform just invalidated; a dirty directory means everything under it. */
-    private static List<String> localPaths(VcsDirtyScope scope) {
-        List<String> paths = new ArrayList<>();
-        for (FilePath path : scope.getDirtyFiles()) {
-            String local = path.getPath();
-            if (path.isDirectory() && !local.endsWith("...")) {
-                local = local + (local.endsWith("/") || local.endsWith("\\") ? "..." : "/...");
+            FilePath beforePath = e.before() == null ? null : VcsUtil.getFilePath(e.before().localPath(), false);
+            FilePath afterPath = e.afterLocal() == null ? null : VcsUtil.getFilePath(e.afterLocal(), false);
+            boolean inScope = (beforePath != null && scope.belongsTo(beforePath)) || (afterPath != null && scope.belongsTo(afterPath));
+            if (!inScope) continue;
+            if (e.status() == null) {
+                builder.processLocallyDeletedFile(afterPath);
+                continue;
             }
-            if (!paths.contains(local)) paths.add(local);
+            ContentRevision before = e.before() == null ? null : P4ContentRevision.of(beforePath, e.before().depotFile(),
+                    e.before().type(), new P4RevisionNumber(e.before().haveRev()), p4);
+            ContentRevision after = afterPath == null ? null : CurrentContentRevision.create(afterPath);
+            builder.processChange(new Change(before, after, e.status()), vcs.getKeyInstanceMethod());
         }
-        return paths;
     }
 
-    private static List<P4Data.OpenedFile> openedFiles(P4Cli.Tagged result) {
-        List<P4Data.OpenedFile> files = new ArrayList<>(result.records().size());
-        for (Map<String, String> record : result.records()) {
-            P4Data.OpenedFile file = P4Data.openedFile(record);
-            if (file != null) files.add(file);
+    /**
+     * One reported item. {@code before} is the depot side (printed at #have), {@code afterLocal} the workspace file.
+     * {@code status == null} means "opened, but gone from disk": a locally deleted file, not a change.
+     */
+    record Entry(P4OpenFile before, String afterLocal, FileStatus status) { }
+
+    /** Pure mapping from opened files to what Local Changes shows. A move/add + move/delete pair is one rename. */
+    static List<Entry> plan(List<P4OpenFile> files, Predicate<String> existsOnDisk) {
+        Map<String, P4OpenFile> byDepot = new HashMap<>();
+        for (P4OpenFile f : files) byDepot.put(f.depotFile(), f);
+        Set<String> consumed = new HashSet<>();
+        List<Entry> out = new ArrayList<>();
+        for (P4OpenFile f : files) {
+            if (f.action().equals("move/add")) {
+                P4OpenFile from = byDepot.get(f.movedFile());
+                if (from != null && from.action().equals("move/delete")) consumed.add(from.depotFile());
+            }
         }
-        return files;
+        for (P4OpenFile f : files) {
+            if (consumed.contains(f.depotFile())) continue;
+            boolean exists = existsOnDisk.test(f.localPath());
+            FileStatus base = P4Status.of(f.action(), true);
+            if (base == FileStatus.DELETED) {
+                out.add(new Entry(f, null, FileStatus.DELETED));
+            } else if (!exists) {
+                out.add(new Entry(null, f.localPath(), null));
+            } else if (f.action().equals("move/add") && byDepot.containsKey(f.movedFile()) && consumed.contains(f.movedFile())) {
+                out.add(new Entry(byDepot.get(f.movedFile()), f.localPath(), FileStatus.MODIFIED));
+            } else if (base == FileStatus.ADDED) {
+                out.add(new Entry(null, f.localPath(), FileStatus.ADDED));
+            } else {
+                out.add(new Entry(f, f.localPath(), f.unresolved() ? FileStatus.MERGED_WITH_CONFLICTS : base));
+            }
+        }
+        return out;
     }
 
-    private static List<String> depotFiles(List<P4Data.OpenedFile> opened) {
-        List<String> depotPaths = new ArrayList<>(opened.size());
-        for (P4Data.OpenedFile file : opened) {
-            if (!depotPaths.contains(file.depotFile())) depotPaths.add(file.depotFile());
-        }
-        return depotPaths;
-    }
-
-    /** `p4 fstat` of the given paths, in one call: the client view mapping and nothing else. */
-    private static List<P4ClientFile> clientFiles(P4Cli cli, List<String> paths) {
-        if (paths.isEmpty()) return List.of();
-        String args = P4Args.file(cli.workdir(), "p4ii-fstat", paths);
+    private static boolean exists(String path) {
         try {
-            P4Cli.Tagged result = cli.tagged(P4Cli.QUERY_TIMEOUT, () -> false, "fstat", "-T", "depotFile,clientFile", "-x", args);
-            return P4ClientFile.parse(result.records());
-        } finally {
-            P4Args.delete(args);
-        }
-    }
-
-    private static boolean exists(FilePath path) {
-        try {
-            return Files.exists(Path.of(path.getPath()));
+            return Files.exists(Path.of(path));
         } catch (InvalidPathException e) {
             return false;
         }

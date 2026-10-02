@@ -204,11 +204,17 @@ public final class P4Panel {
         return Messages.showYesNoDialog(service.project(), message, title, yes, "Cancel", Messages.getWarningIcon()) == Messages.YES;
     }
 
-    /** Exclusive background operation followed by a refresh. */
+    /** Exclusive background operation, then a refresh of this tab AND of the IDE's Local Changes. */
     private void mutate(String title, boolean cancellable, Consumer<ProgressIndicator> work) {
         boolean started = service.background(title, cancellable, true, indicator -> {
-            work.accept(indicator);
-            service.ui(this::refresh);
+            try {
+                work.accept(indicator);
+            } finally {
+                service.ui(() -> {
+                    service.vcsDirty();
+                    refresh();
+                });
+            }
         });
         if (!started) status.setText("another Perforce operation is still running — wait for it to finish");
     }
@@ -247,8 +253,22 @@ public final class P4Panel {
         P4Data.Change c = selectedChange(false);
         if (c == null) return;
         P4Cli cli = service.cli();
-        mutate("Perforce: shelve " + c.id(), false, ind -> show("shelve change " + c.id(),
-                cli.run(null, () -> false, "shelve", "-c", String.valueOf(c.id()))));
+        mutate("Perforce: shelve " + c.id(), false, ind -> {
+            P4Cli.Result r = cli.run(null, () -> false, "shelve", "-c", String.valueOf(c.id()));
+            show("shelve change " + c.id(), r);
+            if (!r.ok() && r.text().contains("use -f")) service.ui(() -> reshelve(c));
+        });
+    }
+
+    /** The change already has a shelf: replacing it discards what is shelved now, so ask before `shelve -f`. */
+    private void reshelve(P4Data.Change c) {
+        if (!confirm("Replace shelved files", "Change " + c.id() + " already has shelved files.\n\nReplace them with the "
+                + "current open files? What is shelved now is overwritten.", "Replace shelf")) {
+            return;
+        }
+        P4Cli cli = service.cli();
+        mutate("Perforce: shelve -f " + c.id(), false, ind -> show("shelve -f change " + c.id(),
+                cli.run(null, () -> false, "shelve", "-f", "-c", String.valueOf(c.id()))));
     }
 
     /** `revert -k`: clears the open state, leaves the files on disk as they are (they become unopened local edits). */
@@ -286,8 +306,10 @@ public final class P4Panel {
         String path = new File(vf.getPath()).getPath(); // platform separators
         P4Cli cli = service.cli();
         mutate("Perforce: " + command, false, ind -> {
-            P4Cli.Result r = cli.run(command, path);
-            show(command + " " + path, r);
+            // edit takes the name escaped (icon@2x.png -> icon%402x.png); add -f takes it literally
+            String error = command.equals("add") ? P4Ops.add(cli, List.of(path), ind::isCanceled)
+                    : P4Ops.edit(cli, List.of(path), ind::isCanceled);
+            service.ui(() -> status.setText(command + " " + path + " -> " + (error == null ? "OK" : "FAILED\n" + error)));
             VfsUtil.markDirtyAndRefresh(true, false, false, vf); // p4 edit flips the read-only bit
         });
     }
@@ -384,7 +406,7 @@ public final class P4Panel {
         if (vf == null) return;
         String local = new File(vf.getPath()).getPath();
         mutate("Perforce: ignore", false, ind -> {
-            P4Cli.Tagged fstat = cli.tagged("fstat", local);
+            P4Cli.Tagged fstat = cli.tagged("fstat", P4Args.escape(local));
             boolean known = fstat.records().stream().anyMatch(r -> r.containsKey("headRev") || r.containsKey("action"));
             if (known) {
                 service.ui(() -> status.setText(local + " is already tracked or opened in Perforce — ignore rules cannot untrack it.\n"
@@ -435,11 +457,12 @@ public final class P4Panel {
         });
     }
 
-    /** Preview with `reconcile -n`, show what would be opened, then open exactly those files. */
+    /** Preview with `reconcile -n`, show what would be opened, then open exactly those files.
+     *  -f in both: without it p4 skips every file whose name holds @ # % * (verified on r25.2). */
     private void reconcile() {
         P4Cli cli = service.cli();
         service.background("Perforce: reconcile preview", true, false, ind -> {
-            P4Cli.Tagged preview = cli.tagged(null, ind::isCanceled, "reconcile", "-n", "//...");
+            P4Cli.Tagged preview = cli.tagged(null, ind::isCanceled, "reconcile", "-n", "-f", "//...");
             List<Map<String, String>> recs = preview.records();
             service.ui(() -> {
                 if (preview.error() != null && recs.isEmpty()) {
@@ -461,30 +484,18 @@ public final class P4Panel {
                     return;
                 }
                 mutate("Perforce: reconcile", true, ind2 -> show("reconcile " + recs.size() + " files",
-                        reconcileExactly(cli, recs, ind2::isCanceled)));
+                        reconcileExactly(cli, recs, ind2::isCanceled).raw()));
             });
         });
     }
 
-    /** Opens exactly the previewed files via an argument file (`-x`), so long lists never hit command-line limits. */
-    static P4Cli.Result reconcileExactly(P4Cli cli, List<Map<String, String>> recs, BooleanSupplier cancelled) {
-        Path args = null;
-        try {
-            args = Files.createTempFile("p4gate-reconcile", ".txt");
-            List<String> files = new ArrayList<>();
-            for (Map<String, String> r : recs) files.add(r.getOrDefault("clientFile", r.get("depotFile")));
-            Files.write(args, files, StandardCharsets.UTF_8);
-            return cli.run(null, cancelled, "-x", args.toString(), "reconcile");
-        } catch (IOException e) {
-            return new P4Cli.Result(-1, "", "cannot write argument file: " + e);
-        } finally {
-            if (args != null) {
-                try {
-                    Files.deleteIfExists(args);
-                } catch (IOException ignored) {
-                    // temp dir cleanup will get it
-                }
-            }
+    /** Opens exactly the previewed files (their local paths, taken literally with -f) via an argument file. */
+    static P4Cli.Tagged reconcileExactly(P4Cli cli, List<Map<String, String>> recs, BooleanSupplier cancelled) {
+        List<String> files = new ArrayList<>();
+        for (Map<String, String> r : recs) {
+            String local = r.get("clientFile");
+            if (local != null && !local.isBlank() && !files.contains(local)) files.add(local);
         }
+        return cli.taggedWithArgs(null, cancelled, files, "reconcile", "-f");
     }
 }
