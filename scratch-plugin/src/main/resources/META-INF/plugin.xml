@@ -24,6 +24,8 @@ disabled (the IDE offers to do it).</p>
 ]]></description>
 
     <change-notes><![CDATA[
+<p>0.4.1: Revert (discard edits) and Submit act on exactly the files you confirmed; commits keep the
+changelist&apos;s job fixes; deleting a renamed file opens the original for delete.</p>
 <p>0.4.0: the VCS integration verified against a live Helix Core server &mdash; real <code>#have</code> diffs,
 commit of exactly the selected files with your message, Rollback restores depot content, auto-checkout,
 file names with <code>@ # % *</code>.</p>

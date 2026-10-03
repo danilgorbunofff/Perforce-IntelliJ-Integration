@@ -418,6 +418,22 @@ public final class P4ParseTest {
     }
 
     @Test
+    public void outputIsClippedForTheStatusArea() {
+        eq("short output is untouched", "a\nb\n", P4Panel.clip("a\nb\n"));
+        StringBuilder big = new StringBuilder();
+        for (int i = 0; i < 1200; i++) big.append("line ").append(i).append('\n');
+        String clipped = P4Panel.clip(big.toString());
+        eq("500 lines + a note", 501L, clipped.lines().count());
+        assertTrue(clipped, clipped.endsWith("… 700 more lines (run the command in a terminal for all of them)"));
+    }
+
+    @Test
+    public void clientsHintForAnUnknownUser() {
+        eq("known user", "p4 clients -u alice", P4Connect.clientsCommand("alice"));
+        eq("unknown user", "p4 clients", P4Connect.clientsCommand("*unknown*"));
+    }
+
+    @Test
     public void rootCheckerNames() {
         eq("defaults", List.of(".p4config", "p4config.txt"), P4RootChecker.configNames(null));
         eq("the env name comes first", List.of("p4.env", ".p4config", "p4config.txt"), P4RootChecker.configNames("p4.env"));

@@ -23,7 +23,7 @@ Other tasks:
 
 | Task | What it does |
 |---|---|
-| `./gradlew test` | 26 unit tests, plus (with `P4_BIN`) live tests against a throwaway p4d and headless in-IDE tests of the VCS integration |
+| `./gradlew test` | 28 unit tests, plus (with `P4_BIN`) 37 live tests against a throwaway p4d and 9 headless in-IDE tests of the VCS integration. Without `P4_BIN` the live tests are reported as skipped and the in-IDE tests are not run |
 | `./gradlew verifyPlugin` | JetBrains Plugin Verifier against IDEA 2025.3, 2026.1.5 and 2026.2.3 |
 | `./gradlew runIde` | a sandbox IDE with the plugin installed (bundled Perforce plugin disabled) |
 
@@ -37,7 +37,7 @@ Every call runs as `p4 -d <workspace dir> …`. The workspace dir defaults to th
 
 Lists of files go through an argument file (`p4 -x <file> …`, written to the system temp dir, never the workspace). That avoids command-line limits and keeps spaces intact. Every operation costs a constant number of p4 processes, whatever the number of files. File names containing `@ # % *` (e.g. `icon@2x.png`) are escaped the way p4 requires (`icon%402x.png`). `p4 add` and `reconcile` get `-f`, so they accept such names.
 
-Read-only queries are killed after **30 s**. Long operations (sync, submit, shelve, reconcile, revert, diff, annotate) have no time limit and show progress in the status bar. Sync, reconcile, revert (keep files), diff and annotate can be cancelled there; submit, shelve and revert (discard) cannot, because killing them half-way leaves the changelist in a worse state. p4 never waits on a prompt: its stdin is closed, so it fails with a message instead of hanging.
+Read-only queries are killed after **30 s**. Long operations (sync, submit, shelve, reconcile, revert, resolve, diff, annotate) have no time limit and show progress in the status bar. Sync, reconcile, revert (keep files), diff and annotate can be cancelled there; submit, shelve and revert (discard) cannot, because killing them half-way leaves the changelist in a worse state. p4 never waits on a prompt: its stdin is closed, so it fails with a message instead of hanging. The status area shows at most 500 lines of p4 output (a full sync prints one line per file); run the command in a terminal for the rest.
 
 ## Connection tab — "why can't I connect"
 
@@ -83,7 +83,7 @@ The plugin is the project's **Perforce** VCS. The platform's own **Local Changes
   An opened file missing from disk is listed under **locally deleted**.
 - **Diff**: the "before" side is the depot content at `#have`, fetched with `p4 print` (binary filetypes are shown as binary). The "after" side is the file on disk.
 - **Auto-checkout**: start typing into a read-only workspace file and the IDE offers to make it writable. Accepting runs **`p4 edit`**, so the file is opened in Perforce and appears in Local Changes.
-- **Commit** submits **exactly the files you selected, with the message you typed**. p4 can only submit a whole changelist, so the plugin creates a new changelist with your message, moves the selected files into it (`p4 reopen`) and submits it (`p4 submit -c`). Files you did not select stay where they were. A source changelist left empty is deleted. If p4 refuses the submit (e.g. a file must be resolved first), nothing is lost: the error names the pending changelist that now holds your files and description, ready to submit again. A file that is not open, or an empty message, is refused before anything changes.
+- **Commit** submits **exactly the files you selected, with the message you typed**. p4 can only submit a whole changelist, so the plugin creates a new changelist with your message, moves the selected files into it (`p4 reopen`) and submits it (`p4 submit -c`). Files you did not select stay where they were. Jobs fixed by the changelist the files came from are fixed by the submitted one, so they close as usual. A source changelist left empty is deleted. If p4 refuses the submit (e.g. a file must be resolved first), nothing is lost: the error names the pending changelist that now holds your files and description, ready to submit again. A file that is not open, or an empty message, is refused before anything changes.
 - **Rollback** runs **`p4 revert`**: the open state is dropped and the depot content restored, exactly as the IDE's Rollback dialog says. A file deleted from disk comes back the same way. Files opened for add stay on disk, unopened. The non-destructive `revert -k` stays in the tool window as **Revert (keep files)**.
 - **Renames and moves in the IDE** (including refactorings) become real **`p4 move`s**, so history follows the file. Files the IDE **creates** are offered for **`p4 add`** (except ones `P4IGNORE` excludes), and files it **deletes** are opened for **delete**. The IDE asks first, per **Settings → Version Control → Confirmation**.
 
@@ -99,10 +99,10 @@ Mutating operations run one at a time per project (a double click cannot submit 
 
 | Button | Acts on | What it runs |
 |---|---|---|
-| Submit… | selected numbered changelist | asks first, then `p4 submit -c <cl>` (not cancellable: a half-finished submit leaves a locked changelist) |
+| Submit… | selected numbered changelist | asks first, then `p4 submit -c <cl>`. If the changelist no longer holds exactly the files you confirmed (something was opened into it after the last Refresh), nothing is submitted and you are asked to Refresh. Not cancellable: a half-finished submit leaves a locked changelist |
 | Shelve | selected numbered changelist | `p4 shelve -c <cl>`; if it already has a shelf, asks before replacing it (`shelve -f`) |
 | Revert (keep files) | selected changelist (incl. default) | `p4 revert -k -c <cl> //...`: clears the open state and leaves the files on disk **as they are** (edits become unopened local changes; Reconcile finds them again) |
-| Revert (discard edits)… | selected changelist (incl. default) | lists the files, asks, then `p4 revert -c <cl> //...`, which restores depot content |
+| Revert (discard edits)… | selected changelist (incl. default) | lists the files, asks, then `p4 -x <those files> revert -c <cl>`, which restores depot content of **exactly the listed files**. A file opened after the last Refresh is never touched |
 | Edit current file | file in the active editor | `p4 edit <path>` (makes it writable) |
 | Add current file | file in the active editor | `p4 add -f <path>`; p4 refuses ignored files and says so |
 | Diff | selected file | `p4 diff <file>` |
@@ -120,7 +120,7 @@ Mutating operations run one at a time per project (a double click cannot submit 
 
 - Ignore rules stop files from being **added** (by `p4 add` and reconcile). They cannot untrack a file already in the depot, so **Ignore file…** refuses such files and says why.
 - For a file **opened for add**, Ignore file… first un-adds it with `revert -k` (the file stays on disk), then writes the rule.
-- The rule (the file's name) goes into the ignore file p4 actually reads, in the file's directory: the first name in `P4IGNORE` as p4 resolves it (env, `p4 set` or P4CONFIG), else `p4ignore.txt`. It then re-checks with `p4 ignores -i` and reports success or failure.
+- The rule (`/<file name>`, anchored to that directory, so same-named files in subdirectories are not affected) goes into the ignore file p4 actually reads, in the file's directory: the first name in `P4IGNORE` as p4 resolves it (env, `p4 set` or P4CONFIG), else `p4ignore.txt`. It then re-checks with `p4 ignores -i` and reports success or failure.
 - With `P4IGNORE` unset, **both** `p4ignore.txt` and `.p4ignore` are honored. Once `P4IGNORE` is set, only the files it names are.
 - `p4 add` **refuses** ignored files ("ignored file can't be added."). The override is **`-I`** (`p4 add -I`), *not* `-f`: `-f` permits wildcard characters in names, a common mix-up.
 

@@ -65,7 +65,13 @@ tasks.prepareSandbox {
 
 tasks.test {
     // live tests run against a real p4d (rsh mode, no port) when P4_BIN points at a dir holding p4 and p4d
-    providers.environmentVariable("P4_BIN").orNull?.let { environment("P4_BIN", it) }
+    val p4Bin = providers.environmentVariable("P4_BIN").orNull
+    if (p4Bin != null) {
+        environment("P4_BIN", p4Bin)
+    } else {
+        // the in-IDE tests need a real p4d as well; without one they would report a pass for a test that never ran
+        exclude("**/P4VcsPlatformTest*")
+    }
     testLogging {
         events("failed", "skipped")
         exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL

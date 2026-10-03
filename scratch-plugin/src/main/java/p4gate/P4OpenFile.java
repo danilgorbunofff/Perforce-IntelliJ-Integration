@@ -3,9 +3,11 @@ package p4gate;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.BooleanSupplier;
 
 /**
@@ -22,12 +24,12 @@ record P4OpenFile(String depotFile, String localPath, String action, long change
     static P4Data.Listing<P4OpenFile> all(P4Cli cli, BooleanSupplier cancelled) {
         P4Cli.Tagged opened = cli.tagged(P4Cli.QUERY_TIMEOUT, cancelled, "opened");
         if (opened.error() != null) return P4Data.Listing.failed(opened.error());
-        List<String> depotPaths = new ArrayList<>();
+        Set<String> depotPaths = new LinkedHashSet<>(); // a set: a list's contains() is quadratic on big changelists
         for (Map<String, String> r : opened.records()) {
             String depot = r.get("depotFile");
-            if (depot != null && !depot.isBlank() && !depotPaths.contains(depot)) depotPaths.add(depot);
+            if (depot != null && !depot.isBlank()) depotPaths.add(depot);
         }
-        return fstat(cli, cancelled, depotPaths); // depot paths are printed already escaped
+        return fstat(cli, cancelled, List.copyOf(depotPaths)); // depot paths are printed already escaped
     }
 
     /** The opened files among the given LOCAL paths (anything not opened is simply absent from the result). */

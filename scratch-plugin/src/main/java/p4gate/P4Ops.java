@@ -65,17 +65,30 @@ final class P4Ops {
         if (opened.error() != null) return opened.error();
         Map<String, P4OpenFile> byLocal = P4OpenFile.byLocal(opened.items());
         List<String> addsToDrop = new ArrayList<>();
+        List<String> movesToUndo = new ArrayList<>();
+        List<String> moveSources = new ArrayList<>();
         List<String> toDelete = new ArrayList<>();
         for (String path : localPaths) {
             P4OpenFile f = byLocal.get(P4OpenFile.normalize(path));
             if (f != null && (f.action().equals("add") || f.action().equals("branch") || f.action().equals("import"))) {
                 addsToDrop.add(f.depotFile());
+            } else if (f != null && f.action().equals("move/add") && !f.movedFile().isBlank()) {
+                // reconcile -d leaves a move/add whose target is gone untouched (verified on r25.2): undo the move,
+                // which brings the source back, then delete the source — renamed-then-deleted is a delete
+                movesToUndo.add(f.depotFile());
+                moveSources.add(f.movedFile());
             } else {
                 toDelete.add(path);
             }
         }
         String error = addsToDrop.isEmpty() ? null : outcome(cli.taggedWithArgs(null, cancelled, addsToDrop, "revert"), addsToDrop.size());
         if (error != null) return error;
+        if (!movesToUndo.isEmpty()) {
+            error = outcome(cli.taggedWithArgs(null, cancelled, movesToUndo, "revert"), movesToUndo.size());
+            if (error != null) return error;
+            error = outcome(cli.taggedWithArgs(null, cancelled, moveSources, "delete"), moveSources.size());
+            if (error != null) return error;
+        }
         if (toDelete.isEmpty()) return null;
         P4Cli.Tagged t = cli.taggedWithArgs(null, cancelled, toDelete, "reconcile", "-d", "-f");
         return t.error(); // "no file(s) to reconcile" for a file p4 never knew is a warning: nothing to do
@@ -154,6 +167,22 @@ final class P4Ops {
         }
         if (depotPaths.isEmpty()) return new SubmitResult(0, 0, "Nothing to submit.");
 
+        // jobs the source changelists fix: the new changelist must fix them too, or the submit silently leaves
+        // them open (and fails where a trigger requires a job)
+        Map<Long, List<String>> jobsBySource = new java.util.LinkedHashMap<>();
+        Set<String> jobs = new LinkedHashSet<>();
+        for (long source : sources) {
+            P4Cli.Tagged fixes = cli.tagged("fixes", "-c", Long.toString(source));
+            if (fixes.error() != null) return new SubmitResult(0, 0, fixes.error());
+            List<String> js = new ArrayList<>();
+            for (Map<String, String> r : fixes.records()) {
+                String job = r.get("Job");
+                if (job != null && !job.isBlank()) js.add(job);
+            }
+            jobsBySource.put(source, js);
+            jobs.addAll(js);
+        }
+
         P4Cli.Result created = cli.runWithInput(changeSpec(description).getBytes(StandardCharsets.UTF_8), "change", "-i");
         long change = createdChange(created.out());
         if (!created.ok() || change <= 0) {
@@ -162,6 +191,13 @@ final class P4Ops {
         String reopened = outcome(cli.taggedWithArgs(null, cancelled, List.copyOf(depotPaths), "reopen", "-c", Long.toString(change)), depotPaths.size());
         if (reopened != null) {
             return new SubmitResult(0, change, reopened + "\nSome files may already be in pending change " + change + ".");
+        }
+        if (!jobs.isEmpty()) {
+            String fixed = outcome(cli.taggedWithArgs(null, cancelled, List.copyOf(jobs), "fix", "-c", Long.toString(change)), jobs.size());
+            if (fixed != null) {
+                return new SubmitResult(0, change, fixed + "\nThe files are in pending change " + change
+                        + "; its jobs could not be attached, so it was not submitted.");
+            }
         }
         // not cancellable: killing p4 half-way through a submit leaves a locked, half-transferred changelist
         P4Cli.Tagged submit = cli.tagged(null, () -> false, "submit", "-c", Long.toString(change));
@@ -174,7 +210,10 @@ final class P4Ops {
             if (r.containsKey("submittedChange")) submitted = P4OpenFile.changeId(r.get("submittedChange"));
         }
         for (long source : sources) {
-            cli.run("change", "-d", Long.toString(source)); // only succeeds when it is now empty; failure is fine
+            if (!cli.tagged("opened", "-c", Long.toString(source)).records().isEmpty()) continue; // still has work
+            List<String> js = jobsBySource.getOrDefault(source, List.of());
+            if (!js.isEmpty()) cli.taggedWithArgs(null, () -> false, js, "fix", "-d", "-c", Long.toString(source));
+            cli.run("change", "-d", Long.toString(source)); // fails if it still has shelved files; that is fine
         }
         return new SubmitResult(submitted, 0, null);
     }
@@ -197,6 +236,9 @@ final class P4Ops {
     /**
      * Error text of an operation over {@code expected} files: p4's error, or — when p4 acted on fewer files than it
      * was given — its warnings (e.g. "file(s) not on client"), since a silently skipped file is still a failure.
+     * A warning beside full success is not a failure (`edit` warns "also opened by bob" and still opens the file).
+     * Reverting a move reports both halves, so a revert can reach the count with a file skipped as "not opened";
+     * that file is already in the state a revert asks for.
      */
     static String outcome(P4Cli.Tagged t, int expected) {
         if (t.error() != null) return t.error();

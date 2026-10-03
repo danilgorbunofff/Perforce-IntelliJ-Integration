@@ -215,7 +215,7 @@ public final class P4Connect {
              .append("    host:   ").append(info.clientHost()).append('\n');
             if (!info.clientKnown()) {
                 failing.add("[5] client '" + clientShown + "' does not exist on the server — set P4CLIENT to one of "
-                        + "your workspaces (`p4 clients -u " + info.userName() + "`) or create it");
+                        + "your workspaces (`" + clientsCommand(info.userName()) + "`) or create it");
             } else {
                 b.append("    root:   ").append(info.clientRoot()).append('\n');
                 if (!isUnder(cli.workdir(), info.clientRoot())) {
@@ -251,6 +251,11 @@ public final class P4Connect {
             case NOT_CONNECTED -> "NOT CONNECTED — first failing step " + (first != null ? first : "(unknown)");
         }).append('\n');
         return new Report(b.toString(), verdict, first);
+    }
+
+    /** The command that lists the user's clients; p4 info says "*unknown*" for a user the server does not have. */
+    static String clientsCommand(String user) {
+        return user == null || user.isBlank() || user.equals("*unknown*") ? "p4 clients" : "p4 clients -u " + user;
     }
 
     /** Case- and separator-insensitive "dir is inside root" (p4 prints roots with '/' on Windows). */

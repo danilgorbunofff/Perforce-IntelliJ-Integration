@@ -400,11 +400,178 @@ public final class P4LiveTest {
         assertEquals(cl, P4Data.submittedIndex(cli, P4Lab.CLIENT, 1).items().get(0).id());
     }
 
+    /** The tree is a snapshot: a file opened after the last Refresh (auto-checkout) must survive a discard-revert. */
     @Test
-    public void queriesTimeOutInsteadOfHanging() {
-        P4Cli.Result r = cli.run(java.time.Duration.ofMillis(1), NEVER, "info");
-        // rsh mode spawns p4d per command: 1 ms is never enough, and the process must be killed, not waited on
-        assertFalse(r.ok());
-        assertTrue(r.err(), r.err().contains("timed out"));
+    public void discardRevertTouchesOnlyTheConfirmedFiles() throws Exception {
+        P4Lab.ok(cli.run("edit", "a.txt"));
+        lab.write("a.txt", "shown in the dialog\n");
+        P4Data.Change shown = P4Data.pendingChanges(cli, P4Lab.CLIENT).items().get(0);
+        assertNull(P4Ops.edit(cli, List.of(lab.local("sub dir/c 2.txt")), NEVER));
+        lab.write("sub dir/c 2.txt", "never shown\n");
+        assertNull(P4Panel.revertConfirmed(cli, shown).error());
+        assertEquals("a1\n", lab.read("a.txt"));
+        assertEquals("never shown\n", lab.read("sub dir/c 2.txt"));
+        assertEquals("edit", openedAt("sub dir/c 2.txt").action());
+    }
+
+    @Test
+    public void toolWindowSubmitRefusesAChangelistThatChangedSinceRefresh() throws Exception {
+        long cl = lab.newChange("reviewed");
+        P4Lab.ok(cli.run("edit", "-c", Long.toString(cl), "a.txt"));
+        P4Data.Change shown = P4Data.pendingChanges(cli, P4Lab.CLIENT).items().get(1);
+        P4Lab.ok(cli.run("edit", "-c", Long.toString(cl), "sub dir/c 2.txt"));
+        P4Cli.Result refused = P4Panel.submitConfirmed(cli, shown);
+        assertFalse(refused.ok());
+        assertTrue(refused.text(), refused.text().contains("Nothing was submitted"));
+        assertEquals("nothing submitted", List.of(1L), P4Data.submittedIndex(cli, P4Lab.CLIENT, 5).items().stream().map(P4Data.SubmittedChange::id).toList());
+        P4Data.Change fresh = P4Data.pendingChanges(cli, P4Lab.CLIENT).items().get(1);
+        P4Cli.Result submitted = P4Panel.submitConfirmed(cli, fresh);
+        assertTrue(submitted.text(), submitted.ok());
+        assertTrue(opened().isEmpty());
+    }
+
+    /** Jobs fixed by the changelist the files were in are fixed by the submitted one (and closed). */
+    @Test
+    public void commitCarriesJobFixes() throws Exception {
+        P4Cli.Result job = cli.runWithInput("Job:\tnew\nStatus:\topen\nUser:\talice\nDescription:\n\ta bug\n"
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8), "job", "-i");
+        String name = job.out().replaceAll("(?s).*Job (\\S+) saved.*", "$1").strip();
+        long cl = lab.newChange("work");
+        P4Lab.ok(cli.run("edit", "-c", Long.toString(cl), "a.txt"));
+        P4Lab.ok(cli.run("fix", "-c", Long.toString(cl), name));
+        lab.write("a.txt", "fixed\n");
+        P4Ops.SubmitResult r = P4Ops.submit(cli, List.of(lab.local("a.txt")), "fixes the bug", NEVER);
+        assertNull(r.error(), r.error());
+        List<Map<String, String>> fixes = cli.tagged("fixes", "-j", name).records();
+        assertEquals("one fix, by the submitted change: " + fixes, 1, fixes.size());
+        assertEquals(Long.toString(r.submitted()), fixes.get(0).get("Change"));
+        assertEquals("closed", cli.tagged("jobs", "-e", name).records().get(0).get("Status"));
+        assertNotNull("the emptied source change is gone", cli.tagged("change", "-o", Long.toString(cl)).error());
+    }
+
+    /** Renamed in the IDE, then deleted in the IDE: the depot file is opened for delete. */
+    @Test
+    public void ideDeleteOfARenamedFileDeletesTheSource() throws Exception {
+        P4Lab.ok(cli.run("edit", "a.txt"));
+        P4Lab.ok(cli.run("move", "a.txt", "renamed.txt"));
+        lab.ws.resolve("renamed.txt").toFile().setWritable(true);
+        Files.delete(lab.ws.resolve("renamed.txt"));
+        assertNull(P4Ops.deleted(cli, List.of(lab.local("renamed.txt")), NEVER));
+        assertEquals(1, opened().size());
+        assertEquals("delete", openedAt("a.txt").action());
+        assertFalse(Files.exists(lab.ws.resolve("a.txt")));
+    }
+
+    @Test
+    public void shelveThenReplaceTheShelf() throws Exception {
+        long cl = lab.newChange("shelf");
+        P4Lab.ok(cli.run("edit", "-c", Long.toString(cl), "a.txt"));
+        assertTrue(P4Panel.shelve(cli, cl, false).ok());
+        P4Cli.Result again = P4Panel.shelve(cli, cl, false);
+        assertTrue(again.text(), P4Panel.alreadyShelved(again));
+        assertTrue(P4Panel.shelve(cli, cl, true).ok());
+        assertFalse(cli.tagged("describe", "-S", "-s", Long.toString(cl)).records().isEmpty());
+    }
+
+    @Test
+    public void diffAndAnnotate() throws Exception {
+        P4Lab.ok(cli.run("edit", "a.txt"));
+        lab.write("a.txt", "a2\n");
+        P4Cli.Result diff = P4Panel.diff(cli, "//depot/a.txt", NEVER);
+        assertTrue(diff.text(), diff.ok() && diff.text().contains("> a2"));
+        P4Cli.Result annotate = P4Panel.annotate(cli, "//depot/icon%402x.png", NEVER);
+        assertTrue(annotate.text(), annotate.ok() && annotate.text().contains("1: img"));
+    }
+
+    /** Sync + auto-merge leaves a real conflict opened; Accept theirs / yours resolve exactly one file each. */
+    @Test
+    public void conflictResolutionAsTheToolWindowRunsIt() throws Exception {
+        Path bobWs = lab.base.resolve("ws bob");
+        lab.createClient("bob", "bob_ws", bobWs);
+        P4Cli bob = lab.cli("bob", "bob_ws", bobWs);
+        P4Lab.ok(bob.run("sync"));
+        P4Lab.ok(bob.run("edit", "a.txt", "icon%402x.png"));
+        Files.writeString(bobWs.resolve("a.txt"), "bob\n");
+        Files.writeString(bobWs.resolve("icon@2x.png"), "bob-img\n");
+        P4Lab.ok(bob.run("submit", "-d", "bob"));
+
+        assertNull(P4Ops.edit(cli, List.of(lab.local("a.txt"), lab.local("icon@2x.png")), NEVER));
+        lab.write("a.txt", "alice\n");
+        lab.write("icon@2x.png", "alice-img\n");
+        P4Cli.Result[] r = P4Panel.syncAndAutoMerge(cli, NEVER);
+        assertTrue(r[1].text(), r[1].text().contains("1 conflicting"));
+        assertEquals(2, cli.tagged("resolve", "-n", "//...").records().size());
+        assertTrue(P4Panel.resolve(cli, "-at", "//depot/a.txt").ok());
+        assertTrue(P4Panel.resolve(cli, "-ay", "//depot/icon%402x.png").ok());
+        assertEquals("bob\n", lab.read("a.txt"));
+        assertEquals("alice-img\n", lab.read("icon@2x.png"));
+        assertTrue(cli.tagged("resolve", "-n", "//...").records().isEmpty());
+    }
+
+    @Test
+    public void streamsTreeAndStreamClient() throws Exception {
+        P4Lab.ok(cli.runWithInput("Depot:\tstreams\nType:\tstream\nMap:\tstreams/...\nStreamDepth:\t//streams/1\n"
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8), "depot", "-i"));
+        for (String[] s : new String[][]{{"main", "none", "mainline"}, {"dev", "//streams/main", "development"}}) {
+            P4Lab.ok(cli.runWithInput(("Stream:\t//streams/" + s[0] + "\nOwner:\talice\nName:\t" + s[0] + "\nParent:\t" + s[1]
+                    + "\nType:\t" + s[2] + "\nParentView:\tinherit\nPaths:\n\tshare ...\n").getBytes(java.nio.charset.StandardCharsets.UTF_8), "stream", "-i"));
+        }
+        var tree = P4StreamsPanel.buildTree(P4Data.streams(cli));
+        assertEquals(1, tree.getChildCount());
+        assertEquals("//streams/main", ((P4Data.StreamSpec) ((javax.swing.tree.DefaultMutableTreeNode) tree.getChildAt(0)).getUserObject()).name());
+        assertEquals(1, tree.getChildAt(0).getChildCount());
+
+        Path sws = lab.base.resolve("ws stream");
+        Files.createDirectories(sws);
+        P4Cli sc = lab.cli(P4Lab.USER, "s_ws", sws);
+        StringBuilder spec = new StringBuilder();
+        for (String line : P4Lab.ok(sc.run("client", "-S", "//streams/dev", "-o", "s_ws")).out().split("\n")) {
+            spec.append(line.startsWith("Root:") ? "Root:\t" + sws : line.startsWith("Host:") ? "Host:" : line).append('\n');
+        }
+        P4Lab.ok(sc.runWithInput(spec.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8), "client", "-i"));
+        assertEquals(List.of("//streams/dev"), P4Data.clientStream(sc).items());
+    }
+
+    /** The rule is anchored to its directory, and names that are ignore-file syntax still work. */
+    @Test
+    public void ignoreRuleIsAnchoredAndTakesAnyName() throws Exception {
+        String top = lab.write("sub dir/c.log", "x\n").toString();
+        String deeper = lab.write("sub dir/deeper/c.log", "x\n").toString();
+        assertTrue(P4Panel.writeIgnoreRule(cli, top).startsWith("now ignored"));
+        assertTrue("a same-named file deeper down is not ignored", P4Data.ignored(cli, List.of(deeper)).isEmpty());
+        for (String name : List.of("#notes.txt", "!keep.txt")) {
+            String result = P4Panel.writeIgnoreRule(cli, lab.write(name, "x\n").toString());
+            assertTrue(result, result.startsWith("now ignored"));
+        }
+    }
+
+    /** A server that accepts the connection and never answers: the query is killed at its timeout, or on cancel.
+     *  (Not a 1 ms timeout on a fast command: one that finishes before the first poll is rightly never killed.) */
+    @Test
+    public void queriesTimeOutInsteadOfHanging() throws Exception {
+        try (java.net.ServerSocket silent = new java.net.ServerSocket(0)) {
+            java.util.List<java.net.Socket> held = new java.util.concurrent.CopyOnWriteArrayList<>();
+            Thread acceptor = new Thread(() -> {
+                try {
+                    while (true) held.add(silent.accept());
+                } catch (java.io.IOException closed) {
+                    // the test is over
+                }
+            });
+            acceptor.setDaemon(true);
+            acceptor.start();
+            P4Cli hung = new P4Cli(lab.p4(), lab.ws.toString(), Map.of("P4PORT", "127.0.0.1:" + silent.getLocalPort(),
+                    "P4USER", "x", "P4CLIENT", "x", "P4CONFIG", ".none"));
+            long t0 = System.nanoTime();
+            P4Cli.Result r = hung.run(java.time.Duration.ofSeconds(2), NEVER, "info");
+            long ms = (System.nanoTime() - t0) / 1_000_000;
+            assertFalse(r.ok());
+            assertTrue(r.err(), r.err().contains("timed out"));
+            assertTrue("killed at the timeout, not later: " + ms + " ms", ms < 5_000);
+
+            long t1 = System.nanoTime();
+            P4Cli.Result c = hung.run(null, () -> System.nanoTime() - t1 > 300_000_000L, "info");
+            assertEquals("cancelled", c.err());
+        }
     }
 }

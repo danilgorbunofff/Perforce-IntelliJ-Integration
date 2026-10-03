@@ -166,7 +166,7 @@ public final class P4Panel {
         P4Cli cli = service.cli();
         service.background("Perforce: p4 info", true, false, indicator -> {
             P4Cli.Result r = cli.run("info");
-            service.ui(() -> status.setText(r.text()));
+            service.ui(() -> status.setText(clip(r.text())));
         });
     }
 
@@ -220,8 +220,22 @@ public final class P4Panel {
     }
 
     private void show(String op, P4Cli.Result r) {
-        String text = op + " -> " + (r.ok() ? "OK" : "FAILED (" + r.code() + ")") + "\n" + r.text();
+        String text = op + " -> " + (r.ok() ? "OK" : "FAILED (" + r.code() + ")") + "\n" + clip(r.text());
         service.ui(() -> status.setText(text));
+    }
+
+    private static final int MAX_LINES = 500;
+
+    /** p4 output for the status area, at most {@link #MAX_LINES} lines: a full sync prints one line per file, and
+     *  handing megabytes to a text area would freeze the UI thread. */
+    static String clip(String text) {
+        int end = -1;
+        for (int i = 0; i < MAX_LINES; i++) {
+            end = text.indexOf('\n', end + 1);
+            if (end < 0) return text;
+        }
+        long more = text.substring(end + 1).lines().count();
+        return more == 0 ? text : text.substring(0, end) + "\n… " + more + " more lines (run the command in a terminal for all of them)";
     }
 
     private static String clArg(P4Data.Change c) {
@@ -245,8 +259,31 @@ public final class P4Panel {
         }
         P4Cli cli = service.cli();
         // not cancellable: killing p4 half-way through a submit leaves a locked, half-transferred changelist
-        mutate("Perforce: submit " + c.id(), false, ind -> show("submit change " + c.id(),
-                cli.run(null, () -> false, "submit", "-c", String.valueOf(c.id()))));
+        mutate("Perforce: submit " + c.id(), false, ind -> show("submit change " + c.id(), submitConfirmed(cli, c)));
+    }
+
+    /**
+     * `submit -c` of a changelist, only if it still holds exactly the files the user confirmed: the tree is a
+     * snapshot of the last Refresh, and p4 submits whatever the changelist holds now.
+     */
+    static P4Cli.Result submitConfirmed(P4Cli cli, P4Data.Change c) {
+        String changed = changedSinceRefresh(cli, c);
+        if (changed != null) return new P4Cli.Result(-1, "", changed + " Nothing was submitted: Refresh and review it again.");
+        return cli.run(null, () -> false, "submit", "-c", String.valueOf(c.id()));
+    }
+
+    /** Why the changelist no longer matches the confirmed snapshot, or null when it does. */
+    private static String changedSinceRefresh(P4Cli cli, P4Data.Change c) {
+        P4Cli.Tagged now = cli.tagged("opened", "-c", clArg(c));
+        if (now.error() != null) return "Could not re-read change " + clArg(c) + ": " + now.error() + ".";
+        java.util.Set<String> current = new java.util.HashSet<>();
+        for (Map<String, String> r : now.records()) {
+            if (r.get("depotFile") != null) current.add(r.get("depotFile"));
+        }
+        java.util.Set<String> confirmed = new java.util.HashSet<>();
+        for (P4Data.OpenedFile f : c.files()) confirmed.add(f.depotFile());
+        return current.equals(confirmed) ? null : "Change " + clArg(c) + " now holds " + current.size()
+                + " files; you confirmed " + confirmed.size() + ".";
     }
 
     private void shelveSelected() {
@@ -254,10 +291,21 @@ public final class P4Panel {
         if (c == null) return;
         P4Cli cli = service.cli();
         mutate("Perforce: shelve " + c.id(), false, ind -> {
-            P4Cli.Result r = cli.run(null, () -> false, "shelve", "-c", String.valueOf(c.id()));
+            P4Cli.Result r = shelve(cli, c.id(), false);
             show("shelve change " + c.id(), r);
-            if (!r.ok() && r.text().contains("use -f")) service.ui(() -> reshelve(c));
+            if (alreadyShelved(r)) service.ui(() -> reshelve(c));
         });
+    }
+
+    /** `shelve -c` (or `shelve -f -c`, which replaces an existing shelf). Not cancellable: half a shelf is worse. */
+    static P4Cli.Result shelve(P4Cli cli, long change, boolean replace) {
+        return replace ? cli.run(null, () -> false, "shelve", "-f", "-c", String.valueOf(change))
+                : cli.run(null, () -> false, "shelve", "-c", String.valueOf(change));
+    }
+
+    /** r25.2: "//depot/a.txt - already shelved, use -f to update." */
+    static boolean alreadyShelved(P4Cli.Result r) {
+        return !r.ok() && r.text().contains("use -f");
     }
 
     /** The change already has a shelf: replacing it discards what is shelved now, so ask before `shelve -f`. */
@@ -267,8 +315,7 @@ public final class P4Panel {
             return;
         }
         P4Cli cli = service.cli();
-        mutate("Perforce: shelve -f " + c.id(), false, ind -> show("shelve -f change " + c.id(),
-                cli.run(null, () -> false, "shelve", "-f", "-c", String.valueOf(c.id()))));
+        mutate("Perforce: shelve -f " + c.id(), false, ind -> show("shelve -f change " + c.id(), shelve(cli, c.id(), true)));
     }
 
     /** `revert -k`: clears the open state, leaves the files on disk as they are (they become unopened local edits). */
@@ -293,8 +340,17 @@ public final class P4Panel {
             return;
         }
         P4Cli cli = service.cli();
-        mutate("Perforce: revert", false, ind -> show("revert change " + clArg(c),
-                cli.run(null, () -> false, "revert", "-c", clArg(c), "//...")));
+        mutate("Perforce: revert", false, ind -> show("revert change " + clArg(c), revertConfirmed(cli, c).raw()));
+    }
+
+    /**
+     * Discards edits in exactly the files the user confirmed, never `//...`: a file opened into the changelist after
+     * the last Refresh (auto-checkout opens into the default one) was never shown, so it is never touched.
+     */
+    static P4Cli.Tagged revertConfirmed(P4Cli cli, P4Data.Change c) {
+        List<String> files = new ArrayList<>();
+        for (P4Data.OpenedFile f : c.files()) files.add(f.depotFile());
+        return cli.taggedWithArgs(null, () -> false, files, "revert", "-c", clArg(c));
     }
 
     // ---------------------------------------------------------------- file operations
@@ -319,9 +375,17 @@ public final class P4Panel {
         if (f == null) return;
         P4Cli cli = service.cli();
         service.background("Perforce: diff", true, false, ind -> {
-            P4Cli.Result r = cli.run(null, ind::isCanceled, "diff", f.depotFile());
-            service.ui(() -> status.setText("diff " + f.depotFile() + "\n" + r.text()));
+            P4Cli.Result r = diff(cli, f.depotFile(), ind::isCanceled);
+            service.ui(() -> status.setText("diff " + f.depotFile() + "\n" + clip(r.text())));
         });
+    }
+
+    static P4Cli.Result diff(P4Cli cli, String depotFile, BooleanSupplier cancelled) {
+        return cli.run(null, cancelled, "diff", depotFile);
+    }
+
+    static P4Cli.Result annotate(P4Cli cli, String depotFile, BooleanSupplier cancelled) {
+        return cli.run(null, cancelled, "annotate", depotFile);
     }
 
     private void annotateSelected() {
@@ -333,8 +397,8 @@ public final class P4Panel {
         }
         P4Cli cli = service.cli();
         service.background("Perforce: annotate", true, false, ind -> {
-            P4Cli.Result r = cli.run(null, ind::isCanceled, "annotate", f.depotFile());
-            service.ui(() -> status.setText("annotate " + f.depotFile() + "\n" + r.text()));
+            P4Cli.Result r = annotate(cli, f.depotFile(), ind::isCanceled);
+            service.ui(() -> status.setText("annotate " + f.depotFile() + "\n" + clip(r.text())));
         });
     }
 
@@ -364,9 +428,14 @@ public final class P4Panel {
                     return;
                 }
                 mutate("Perforce: resolve " + flag, false, ind2 -> show("resolve " + flag + " " + f.depotFile(),
-                        cli.run("resolve", flag, f.depotFile())));
+                        resolve(cli, flag, f.depotFile())));
             });
         });
+    }
+
+    /** `resolve -at|-ay` of one file. No time limit: accepting theirs on a large binary transfers it. */
+    static P4Cli.Result resolve(P4Cli cli, String flag, String depotFile) {
+        return cli.run(null, () -> false, "resolve", flag, depotFile);
     }
 
     /**
@@ -428,19 +497,22 @@ public final class P4Panel {
         }
         Path file = Path.of(local);
         Path ignoreFile = Path.of(name).isAbsolute() ? Path.of(name) : file.getParent().resolve(name);
-        String baseName = file.getFileName().toString();
+        // "/name": anchored to the ignore file's directory, so a same-named file deeper down is not ignored too,
+        // and a name starting with # or ! is not read as a comment or a negation (both verified on r25.2).
+        // A global (absolute) P4IGNORE file lives elsewhere, so it gets the bare name; the re-check below reports it.
+        String rule = Path.of(name).isAbsolute() ? file.getFileName().toString() : "/" + file.getFileName();
         try {
             List<String> lines = Files.exists(ignoreFile) ? Files.readAllLines(ignoreFile, StandardCharsets.UTF_8) : List.of();
-            if (!lines.contains(baseName)) {
+            if (!lines.contains(rule)) {
                 List<String> updated = new ArrayList<>(lines);
-                updated.add(baseName);
+                updated.add(rule);
                 Files.write(ignoreFile, (String.join("\n", updated) + "\n").getBytes(StandardCharsets.UTF_8));
             }
         } catch (IOException e) {
             return "cannot write " + ignoreFile + ": " + e;
         }
         boolean ok = !P4Data.ignored(cli, List.of(local)).isEmpty();
-        return (ok ? "now ignored: " : "IGNORE FAILED (p4 still does not ignore it): ") + local + "\n(rule '" + baseName
+        return (ok ? "now ignored: " : "IGNORE FAILED (p4 still does not ignore it): ") + local + "\n(rule '" + rule
                 + "' in " + ignoreFile + (setting == null ? ", P4IGNORE unset" : ", P4IGNORE=" + setting) + ")";
     }
 
@@ -450,11 +522,17 @@ public final class P4Panel {
     private void syncAutoMerge() {
         P4Cli cli = service.cli();
         mutate("Perforce: sync", true, ind -> {
-            P4Cli.Result sync = cli.run(null, ind::isCanceled, "sync");
-            P4Cli.Result merge = cli.run(null, ind::isCanceled, "resolve", "-am");
-            service.ui(() -> status.setText("sync:\n" + sync.text() + "\n\nresolve -am (auto-merge, conflicts left alone):\n"
-                    + merge.text() + "\nFor a file still listed as conflicting: select it, then Accept theirs… / Accept yours…"));
+            P4Cli.Result[] r = syncAndAutoMerge(cli, ind::isCanceled);
+            service.ui(() -> status.setText("sync:\n" + clip(r[0].text()) + "\n\nresolve -am (auto-merge, conflicts left alone):\n"
+                    + clip(r[1].text()) + "\nFor a file still listed as conflicting: select it, then Accept theirs… / Accept yours…"));
         });
+    }
+
+    /** {sync, resolve -am}: merges only files without conflicting chunks; conflicting files are left opened. */
+    static P4Cli.Result[] syncAndAutoMerge(P4Cli cli, BooleanSupplier cancelled) {
+        P4Cli.Result sync = cli.run(null, cancelled, "sync");
+        P4Cli.Result merge = cli.run(null, cancelled, "resolve", "-am");
+        return new P4Cli.Result[]{sync, merge};
     }
 
     /** Preview with `reconcile -n`, show what would be opened, then open exactly those files.

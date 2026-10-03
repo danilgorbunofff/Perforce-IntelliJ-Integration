@@ -1,5 +1,27 @@
 # Release notes
 
+## v0.4.1 (audit fixes, 2026-10-03)
+
+An independent audit against a live r25.2 server found two defects that could lose work or break a team's workflow. Both are fixed and covered by live tests.
+
+### Fixed
+
+- **Revert (discard edits)… could discard edits it never showed.** It listed the files of the last Refresh, then ran `p4 revert -c <cl> //...`, which also reverted files opened since (auto-checkout opens into the default changelist). It now reverts exactly the listed files.
+- **Submit… could submit files it never showed**, for the same reason. It now refuses when the changelist no longer holds exactly the confirmed files.
+- **IDE Commit dropped job fixes.** The new changelist did not fix the jobs of the changelist the files came from, so jobs stayed open (and a job-required trigger would refuse every commit). Jobs are now carried over and closed by the submit.
+- **Deleting a file renamed in the IDE did nothing** (the move stayed open with its target gone). The move is undone and the original file is opened for delete.
+- Local Changes de-duplicated opened files with a quadratic list search (0.5 s of 2.1 s at 20,000 opened files). It now uses a set.
+- The status area showed unbounded p4 output (a full sync prints one line per file). It is capped at 500 lines.
+- Accept theirs / yours ran under the 30 s query limit; a large binary could be killed mid-resolve. No limit now.
+- **Ignore file…** wrote a bare name, which also ignored same-named files in subdirectories and failed for names starting with `#` or `!`. The rule is now `/name`.
+- The diagnosis suggested `p4 clients -u *unknown*` for a user the server does not know.
+
+### Tests
+
+- The timeout test used a 1 ms limit on `p4 info`, which passes only where p4 takes longer than the first 100 ms poll. It now uses a server that never answers.
+- The in-IDE tests returned early without `P4_BIN` and were reported as passed. They are now left out of such runs.
+- New live tests: shelve and re-shelve, diff, annotate, sync + auto-merge with Accept theirs / yours, streams, and each fix above. **74 tests** (28 unit, 37 live, 9 in-IDE), 0 failures; `verifyPlugin` compatible with 2025.3, 2026.1.5 and 2026.2.3.
+
 ## v0.4 (reverification, 2026-10-02)
 
 A full review of v0.3 against a **live** Helix Core r25.2 server found that its VCS provider could not work: it had only ever been compiled and unit-tested. All of it is fixed below, and every fix is now covered by automated tests that run against a real p4d and inside a headless IntelliJ IDEA 2025.3.
