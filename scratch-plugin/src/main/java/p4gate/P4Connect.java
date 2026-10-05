@@ -134,6 +134,7 @@ public final class P4Connect {
     }
 
     private void importConfig() {
+        banner.setVisible(false); // the environment is about to change: the last verdict no longer applies
         reportArea.setText("looking for a P4CONFIG file...");
         P4Cli cli = service.cli();
         service.background("Perforce: import P4CONFIG", true, false, indicator -> {

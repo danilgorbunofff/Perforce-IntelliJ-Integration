@@ -31,6 +31,23 @@ final class P4Ops {
         return outcome(cli.taggedWithArgs(null, cancelled, localPaths, "add", "-f"), localPaths.size());
     }
 
+    /**
+     * `p4 add -f` for a file the user asked to add: unlike {@link #add}, a warning means the file was NOT opened for
+     * add ("can't add (already opened for edit)", "add of existing file", "ignored file can't be added"), so it is
+     * reported. p4 exits 0 for the first two; counting the record it still prints made the tool window say OK.
+     */
+    static String addStrict(P4Cli cli, List<String> localPaths, BooleanSupplier cancelled) {
+        P4Cli.Tagged t = cli.taggedWithArgs(null, cancelled, localPaths, "add", "-f");
+        if (t.error() != null) return t.error();
+        // p4 reports these at info level (0/1) or warning level (2), depending on the case, so look at every message
+        List<String> refused = new ArrayList<>();
+        for (P4Cli.Message m : t.messages()) {
+            String w = m.text().strip();
+            if (w.contains("can't add") || w.contains("add of existing file") || w.contains("ignored file")) refused.add(w);
+        }
+        return refused.isEmpty() ? null : String.join("\n", refused);
+    }
+
     /** `p4 reconcile -d -f`: opens files that are gone from disk for delete (`p4 delete` needs the file present). */
     static String deleteMissing(P4Cli cli, List<String> localPaths, BooleanSupplier cancelled) {
         return outcome(cli.taggedWithArgs(null, cancelled, localPaths, "reconcile", "-d", "-f"), localPaths.size());

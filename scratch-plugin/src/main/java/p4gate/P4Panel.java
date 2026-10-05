@@ -415,6 +415,31 @@ public final class P4Panel {
         if (!started) status.setText("another Perforce operation is still running — wait for it to finish");
     }
 
+    /** Tagged results hold one record per file: print them as p4 itself would, not as raw JSON. */
+    private void show(String op, P4Cli.Tagged t) {
+        P4Cli.Result r = t.raw();
+        String lines = recordLines(t);
+        String text = op + " -> " + (r.ok() ? "OK" : "FAILED (" + r.code() + ")") + "\n" + clip(lines.isEmpty() ? r.text() : lines);
+        service.ui(() -> status.setText(text));
+    }
+
+    /** "//depot/a.txt#3 - was edit, reverted" / "//depot/b.txt#1 - add", plus p4's warnings and errors. */
+    static String recordLines(P4Cli.Tagged t) {
+        StringBuilder b = new StringBuilder();
+        for (Map<String, String> r : t.records()) {
+            String depot = r.get("depotFile");
+            if (depot == null) continue;
+            String rev = r.getOrDefault("haveRev", r.getOrDefault("rev", ""));
+            String action = r.get("action");
+            b.append(depot).append(rev.isEmpty() ? "" : "#" + rev).append(" - ");
+            if ("reverted".equals(action) && r.get("oldAction") != null) b.append("was ").append(r.get("oldAction")).append(", reverted");
+            else b.append(action == null ? "ok" : action);
+            b.append('\n');
+        }
+        for (String w : t.warnings()) b.append(w).append('\n');
+        return b.toString().strip();
+    }
+
     private void show(String op, P4Cli.Result r) {
         String text = op + " -> " + (r.ok() ? "OK" : "FAILED (" + r.code() + ")") + "\n" + clip(r.text());
         service.ui(() -> status.setText(text));
@@ -536,7 +561,7 @@ public final class P4Panel {
             return;
         }
         P4Cli cli = service.cli();
-        mutate("Perforce: revert", false, ind -> show("revert change " + clArg(c), revertConfirmed(cli, c).raw()));
+        mutate("Perforce: revert", false, ind -> show("revert change " + clArg(c), revertConfirmed(cli, c)));
     }
 
     /**
@@ -559,16 +584,35 @@ public final class P4Panel {
         P4Cli cli = service.cli();
         mutate("Perforce: " + command, false, ind -> {
             // edit takes the name escaped (icon@2x.png -> icon%402x.png); add -f takes it literally
-            String error = command.equals("add") ? P4Ops.add(cli, List.of(path), ind::isCanceled)
+            String failure = command.equals("add") ? P4Ops.addStrict(cli, List.of(path), ind::isCanceled)
                     : P4Ops.edit(cli, List.of(path), ind::isCanceled);
+            String error = failure != null && failure.contains("ignored file")
+                    ? failure + "\nThe file matches an ignore rule. Remove the rule, or run `p4 add -I` on it in a terminal to add it anyway."
+                    : failure;
             service.ui(() -> status.setText(command + " " + path + " -> " + (error == null ? "OK" : "FAILED\n" + error)));
             VfsUtil.markDirtyAndRefresh(true, false, false, vf); // p4 edit flips the read-only bit
         });
     }
 
+    /** Why a file has no diff against the depot, or null when it has one. */
+    static String noDiffReason(P4Data.OpenedFile f) {
+        return switch (f.action()) {
+            case "add", "branch", "move/add" -> f.depotFile() + " is opened for " + f.action()
+                    + " — it is new, so there is no depot revision to diff against";
+            case "delete", "move/delete", "purge" -> f.depotFile() + " is opened for " + f.action()
+                    + " — the local file is gone, so there is nothing to diff";
+            default -> null;
+        };
+    }
+
     private void diffSelected() {
         P4Data.OpenedFile f = selectedFile();
         if (f == null) return;
+        String why = noDiffReason(f);
+        if (why != null) {
+            status.setText(why);
+            return;
+        }
         P4Cli cli = service.cli();
         service.background("Perforce: diff", true, false, ind -> {
             P4Cli.Result r = diff(cli, f.depotFile(), ind::isCanceled);
@@ -758,7 +802,7 @@ public final class P4Panel {
                     return;
                 }
                 mutate("Perforce: reconcile", true, ind2 -> show("reconcile " + recs.size() + " files",
-                        reconcileExactly(cli, recs, ind2::isCanceled).raw()));
+                        reconcileExactly(cli, recs, ind2::isCanceled)));
             });
         });
     }

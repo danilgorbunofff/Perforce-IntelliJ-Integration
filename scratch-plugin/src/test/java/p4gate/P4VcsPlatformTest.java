@@ -10,6 +10,7 @@ import com.intellij.openapi.vcs.VcsDirectoryMapping;
 import com.intellij.openapi.vcs.VcsException;
 import com.intellij.openapi.vcs.VcsRootChecker;
 import com.intellij.openapi.vcs.changes.Change;
+import com.intellij.openapi.vcs.changes.CommitContext;
 import com.intellij.openapi.vcs.changes.ChangeListManagerImpl;
 import com.intellij.openapi.vcs.changes.LocallyDeletedChange;
 import com.intellij.openapi.vcs.changes.VcsDirtyScopeManager;
@@ -24,6 +25,7 @@ import com.intellij.testFramework.PsiTestUtil;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 
 /**
@@ -141,6 +143,23 @@ public final class P4VcsPlatformTest extends HeavyPlatformTestCase {
         assertNull("submitted, so no longer a change", changeOf("a.txt"));
         assertNotNull("the unselected file is untouched", changeOf("icon@2x.png"));
         assertFalse("submitted files are read-only again", Files.isWritable(lab.ws.resolve("a.txt")));
+    }
+
+    /**
+     * Found by clicking through the real IDE: the Commit dialog reported "7 files committed" and submitted nothing.
+     * The platform's pipeline calls commit(changes, message, CommitContext, feedback); the two-argument form is only
+     * an entry default, so a provider that overrides just that one never runs. This is the call the dialog makes.
+     */
+    public void testCommitThroughThePlatformPipelineOverloadSubmits() throws Exception {
+        if (lab == null) return;
+        assertNull(P4Ops.edit(lab.cli(), List.of(lab.local("a.txt")), () -> false));
+        lab.write("a.txt", "a3\n");
+        List<VcsException> errors = vcs.getCheckinEnvironment()
+                .commit(List.of(changeOf("a.txt")), "via the pipeline overload", new CommitContext(), new HashSet<>());
+        assertTrue(String.valueOf(errors), errors.isEmpty());
+        P4Data.SubmittedChange top = P4Data.submittedIndex(lab.cli(), P4Lab.CLIENT, 1).items().get(0);
+        assertEquals("a change was really submitted", "via the pipeline overload", top.desc());
+        assertNull("submitted, so no longer a change", changeOf("a.txt"));
     }
 
     public void testCommitReportsP4Errors() throws Exception {

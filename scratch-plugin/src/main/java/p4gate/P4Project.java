@@ -27,7 +27,7 @@ public final class P4Project {
 
     private final Project project;
     private final CoroutineScope scope;
-    private final AtomicBoolean busy = new AtomicBoolean();
+    private final java.util.concurrent.atomic.AtomicReference<Object> busy = new java.util.concurrent.atomic.AtomicReference<>(); // owner of the running exclusive operation, or null
     private volatile P4Cli cli;
 
     /** The platform injects the scope: cancelled when the project closes or the plugin is unloaded. */
@@ -90,7 +90,8 @@ public final class P4Project {
      * @return false when an exclusive operation is already running (nothing was started)
      */
     public boolean background(String title, boolean cancellable, boolean exclusive, Consumer<ProgressIndicator> work) {
-        if (exclusive && !busy.compareAndSet(false, true)) {
+        Object token = new Object();
+        if (exclusive && !busy.compareAndSet(null, token)) {
             return false;
         }
         new Task.Backgroundable(project, title, cancellable) {
@@ -105,12 +106,17 @@ public final class P4Project {
                     // a failure is shown to the user, never left as an IDE error report with a frozen panel
                     LOG.warn(title + " failed", e);
                     ui(() -> Messages.showErrorDialog(project, title + " failed:\n" + e, "Perforce"));
+                } finally {
+                    // released when the WORK ends, not in onFinished (that runs on the EDT after the current event):
+                    // a follow-up the work queued with ui() - "Replace shelf?" then shelve -f - must find it free
+                    if (exclusive) busy.compareAndSet(token, null);
                 }
             }
 
             @Override
             public void onFinished() {
-                if (exclusive) busy.set(false);
+                // also covers a task that never ran; only ever releases this task's own hold
+                if (exclusive) busy.compareAndSet(token, null);
             }
         }.queue();
         return true;

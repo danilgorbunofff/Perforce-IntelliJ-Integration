@@ -18,6 +18,9 @@ import javax.swing.tree.TreePath;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
@@ -84,6 +87,31 @@ public final class P4PanelUiTest extends HeavyPlatformTestCase {
                 "Add current file", "Ignore file…", "Reconcile…", "p4 info")) {
             assertTrue("toolbar is missing '" + expected + "' (has " + names + ")", names.contains(expected));
         }
+    }
+
+    /**
+     * "Replace shelf" always failed with "another Perforce operation is still running": the confirm callback the first
+     * operation queued with ui() started the next exclusive one while the first still held the lock (it was only released
+     * in onFinished, which runs after that callback). The 600 ms sleep stands for the modal prompt on the EDT.
+     */
+    public void testAFollowUpQueuedByAnExclusiveOperationCanStartTheNextOne() throws Exception {
+        AtomicBoolean secondStarted = new AtomicBoolean();
+        CountDownLatch secondRan = new CountDownLatch(1);
+        CountDownLatch decided = new CountDownLatch(1);
+        assertTrue(service.background("first", false, true, ind -> service.ui(() -> {
+            try {
+                Thread.sleep(600);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            secondStarted.set(service.background("second", false, true, i -> secondRan.countDown()));
+            decided.countDown();
+        })));
+        assertTrue("the follow-up callback ran", decided.await(20, TimeUnit.SECONDS));
+        assertTrue("the follow-up was accepted, not refused as busy", secondStarted.get());
+        assertTrue("and it ran", secondRan.await(20, TimeUnit.SECONDS));
+        Thread.sleep(300);
+        assertTrue("and the lock is free again afterwards", service.background("third", false, true, i -> { }));
     }
 
     public void testRowsReadAsChangelistsAndColouredFiles() {

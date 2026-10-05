@@ -186,6 +186,19 @@ public final class P4LiveTest {
         assertNotNull("a silently skipped file must be reported", P4Ops.edit(cli, List.of(lab.local("never-added.txt")), NEVER));
     }
 
+    /** Add current file said "OK" for a file p4 refused ("can't add (already opened for edit)": a warning, exit 0). */
+    @Test
+    public void addStrictReportsWhatP4Refused() throws Exception {
+        assertNull(P4Ops.edit(cli, List.of(lab.local("a.txt")), NEVER));
+        String edited = P4Ops.addStrict(cli, List.of(lab.local("a.txt")), NEVER);
+        assertNotNull("a file already opened for edit cannot be added", edited);
+        assertTrue(edited, edited.contains("can't add"));
+        lab.write("fresh.txt", "new\n");
+        assertNull("a genuinely new file is added", P4Ops.addStrict(cli, List.of(lab.local("fresh.txt")), NEVER));
+        assertNull("adding it again is a harmless no-op (p4: 'currently opened for add'), like editing an opened file",
+                P4Ops.addStrict(cli, List.of(lab.local("fresh.txt")), NEVER));
+    }
+
     @Test
     public void addWithWildcardCharactersAndDeleteMissing() throws Exception {
         lab.write("new@1.txt", "n\n");

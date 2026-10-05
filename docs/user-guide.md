@@ -137,7 +137,7 @@ The operations are the icons in the toolbar above the tree (hover one for its na
 | The plugin shows as disabled, "incompatible with Perforce Helix Core" | Disable JetBrains' bundled **Perforce Helix Core** plugin and restart |
 | Nothing connects | Connection tab → Save & run diagnosis; read the VERDICT |
 | Works in terminal, not in IDE | Is the **workspace dir** the directory you run `p4` from in the terminal? Then check step 3: which config file p4 read |
-| Tree says NOT READY | The message names the cause (server unreachable / client does not exist); run the diagnosis |
+| Tree says "Not ready —" | The message names the cause (server unreachable / client does not exist); run the diagnosis |
 | Local Changes stays empty | Is the project mapped to Perforce (Settings → Version Control → Directory Mappings)? Is the file actually open (`p4 opened`)? |
 | "must resolve" on submit | **Sync + auto-merge**, then Accept theirs/yours on each remaining file |
 | A file you want tracked never appears in reconcile | It may be ignored: check `P4IGNORE` in diagnosis step 3 and the ignore files in its directory |

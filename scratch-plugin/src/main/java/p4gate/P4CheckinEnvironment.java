@@ -4,12 +4,14 @@ import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vcs.FilePath;
 import com.intellij.openapi.vcs.VcsException;
 import com.intellij.openapi.vcs.changes.Change;
+import com.intellij.openapi.vcs.changes.CommitContext;
 import com.intellij.openapi.vcs.checkin.CheckinEnvironment;
 import com.intellij.openapi.vfs.VirtualFile;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Turns the platform's Commit action into a p4 submit of exactly the selected files with the commit message
@@ -76,8 +78,15 @@ final class P4CheckinEnvironment implements CheckinEnvironment {
         return errors;
     }
 
+    /**
+     * The overload the platform's commit pipeline actually calls (IDEA 2025.3: commit(changes, message, CommitContext,
+     * feedback)). The two-argument commit(changes, message) is only an entry default that delegates to this one, and
+     * the next default in the chain does nothing: overriding the two-argument form alone made the IDE report
+     * "N files committed" without ever running p4 submit.
+     */
     @Override
-    public List<VcsException> commit(@NotNull List<? extends Change> changes, @NotNull String commitMessage) {
+    public List<VcsException> commit(@NotNull List<? extends Change> changes, @NotNull String commitMessage,
+                                     @NotNull CommitContext commitContext, @NotNull Set<? super String> feedback) {
         Project project = vcs.getProject();
         List<String> paths = new ArrayList<>();
         for (Change change : changes) {

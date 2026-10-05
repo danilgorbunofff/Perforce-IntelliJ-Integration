@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.SortedMap;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 /** Dependency-free tests for every parser, argv builder and diagnosis rule. Fixtures are verbatim p4 r25.2 output
@@ -440,5 +441,23 @@ public final class P4ParseTest {
         eq("a path-valued P4CONFIG is not a file name", List.of(".p4config", "p4config.txt"), P4RootChecker.configNames("C:\\cfg\\p4.env"));
         eq("no duplicates", List.of(".P4CONFIG", "p4config.txt"), P4RootChecker.configNames(".P4CONFIG"));
         assertTrue(P4RootChecker.isConfigName("P4CONFIG.TXT", P4RootChecker.configNames(null)));
+    }
+
+    @Test
+    public void taggedResultsPrintAsReadableLinesNotJson() {
+        P4Cli.Tagged t = new P4Cli.Tagged(new P4Cli.Result(0, "{\"action\":\"reverted\"}", ""), List.of(
+                Map.of("action", "reverted", "oldAction", "edit", "depotFile", "//depot/a.txt", "haveRev", "3"),
+                Map.of("action", "add", "depotFile", "//depot/b.txt", "rev", "1")), List.of());
+        assertEquals("//depot/a.txt#3 - was edit, reverted\n//depot/b.txt#1 - add", P4Panel.recordLines(t));
+    }
+
+    @Test
+    public void filesOpenedForAddOrDeleteExplainWhyThereIsNoDiff() {
+        P4Data.OpenedFile add = new P4Data.OpenedFile("//depot/n.txt", "/ws/n.txt", "add", 0, "text");
+        P4Data.OpenedFile del = new P4Data.OpenedFile("//depot/d.txt", "/ws/d.txt", "delete", 0, "text");
+        P4Data.OpenedFile edit = new P4Data.OpenedFile("//depot/e.txt", "/ws/e.txt", "edit", 0, "text");
+        assertTrue(P4Panel.noDiffReason(add).contains("no depot revision to diff against"));
+        assertTrue(P4Panel.noDiffReason(del).contains("nothing to diff"));
+        assertNull("an edited file has a diff", P4Panel.noDiffReason(edit));
     }
 }
