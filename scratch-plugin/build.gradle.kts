@@ -62,6 +62,11 @@ tasks.prepareTestSandbox {
 tasks.prepareSandbox {
     disabledPlugins.add("PerforceDirectPlugin")
 }
+// runIde uses its own sandbox (config_runIde), separate from prepareSandbox's
+tasks.prepareSandbox_runIde {
+    disabledPlugins.add("PerforceDirectPlugin")
+    disabledPlugins.add("com.intellij.modules.ultimate")
+}
 
 tasks.test {
     // live tests run against a real p4d (rsh mode, no port) when P4_BIN points at a dir holding p4 and p4d
@@ -70,7 +75,7 @@ tasks.test {
         environment("P4_BIN", p4Bin)
     } else {
         // the in-IDE tests need a real p4d as well; without one they would report a pass for a test that never ran
-        exclude("**/P4VcsPlatformTest*")
+        exclude("**/P4VcsPlatformTest*", "**/P4PanelUiTest*")
     }
     testLogging {
         events("failed", "skipped")

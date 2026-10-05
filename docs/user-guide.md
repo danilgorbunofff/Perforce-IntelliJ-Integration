@@ -97,7 +97,9 @@ Press **Refresh**. It shows only **your client's** pending changelists (`p4 chan
 
 Mutating operations run one at a time per project (a double click cannot submit twice). Afterwards they refresh both this tab and the IDE's Local Changes.
 
-| Button | Acts on | What it runs |
+The operations are the icons in the toolbar above the tree (hover one for its name). **Revert Changelist** and **Resolve Conflict** are dropdowns; **Edit current file**, **Add current file**, **Ignore file…**, **Reconcile…** and **p4 info** are under **More Actions** (⋮). When the tool window is narrow, the toolbar folds the icons that do not fit into a **»** menu, so none is ever cut off. **Right-click** a changelist or a file for the operations that apply to it (Submit and Shelve are offered only for numbered changelists, so the default changelist's menu has just the two reverts). In the tree, file names are coloured by what is opened for them (add green, edit blue, delete grey), with the folder below the depot in grey. A refresh, which every operation ends with, keeps the changelists you had expanded and the row you had selected.
+
+| Operation | Acts on | What it runs |
 |---|---|---|
 | Submit… | selected numbered changelist | asks first, then `p4 submit -c <cl>`. If the changelist no longer holds exactly the files you confirmed (something was opened into it after the last Refresh), nothing is submitted and you are asked to Refresh. Not cancellable: a half-finished submit leaves a locked changelist |
 | Shelve | selected numbered changelist | `p4 shelve -c <cl>`; if it already has a shelf, asks before replacing it (`shelve -f`) |

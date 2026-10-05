@@ -1,6 +1,11 @@
 package p4gate;
 
+import com.intellij.icons.AllIcons;
+import com.intellij.ui.JBColor;
+import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBScrollPane;
+import com.intellij.ui.components.JBTextField;
+import com.intellij.util.ui.JBUI;
 
 import javax.swing.*;
 import java.awt.*;
@@ -32,28 +37,77 @@ public final class P4Connect {
     private final JTextArea reportArea = new JTextArea(24, 90);
     private final JTextField exeField;
     private final JTextField dirField;
+    private final JBLabel banner = new JBLabel(" ");
 
     public P4Connect(P4Project service) {
         this.service = service;
-        this.exeField = new JTextField(service.cli().executable(), 18);
-        this.dirField = new JTextField(service.cli().workdir(), 36);
+        this.exeField = new JBTextField(service.cli().executable(), 18);
+        this.dirField = new JBTextField(service.cli().workdir(), 36);
     }
 
     public JComponent root() {
-        JPanel top = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        top.add(new JLabel("p4 executable:"));
-        top.add(exeField);
-        top.add(new JLabel("workspace dir:"));
-        top.add(dirField);
-        top.add(button("Save & run diagnosis", this::runDiagnosis));
-        top.add(button("Import env from P4CONFIG", this::importConfig));
+        // labels share one column, fields stretch to the dock width (never clipped), buttons share a row
+        JPanel actions = new JPanel(new GridLayout(1, 2, 6, 0));
+        actions.add(button("Save & run diagnosis", this::runDiagnosis));
+        actions.add(button("Import env from P4CONFIG", this::importConfig));
+        banner.setBorder(JBUI.Borders.empty(6, 8));
+        banner.setVisible(false);
+        JPanel rows = new JPanel(new GridLayout(0, 1, 0, 6));
+        int labelWidth = Math.max(new JBLabel("p4 executable:").getPreferredSize().width,
+                new JBLabel("workspace dir:").getPreferredSize().width);
+        rows.add(labeled("p4 executable:", exeField, labelWidth));
+        rows.add(labeled("workspace dir:", dirField, labelWidth));
+        rows.add(actions);
+        JPanel form = new JPanel(new BorderLayout(0, 6));
+        form.add(rows, BorderLayout.NORTH);
+        form.add(banner, BorderLayout.SOUTH);
+        form.setBorder(JBUI.Borders.empty(8));
+
+        reportArea.setText("Press “Save & run diagnosis” to find out why p4 can’t connect (or to confirm that it can).");
+        reportArea.setEditable(false);
+        reportArea.setLineWrap(true); // long paths and hints wrap instead of running off the edge
+        reportArea.setWrapStyleWord(true);
+        reportArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, JBUI.Fonts.label().getSize()));
+        reportArea.setBorder(JBUI.Borders.empty(4, 8));
+        JBScrollPane report = new JBScrollPane(reportArea);
+        report.setBorder(JBUI.Borders.customLine(JBColor.border(), 1, 0, 0, 0));
 
         JPanel panel = new JPanel(new BorderLayout());
-        panel.add(top, BorderLayout.NORTH);
-        reportArea.setEditable(false);
-        reportArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        panel.add(new JBScrollPane(reportArea), BorderLayout.CENTER);
+        panel.add(form, BorderLayout.NORTH);
+        panel.add(report, BorderLayout.CENTER);
         return panel;
+    }
+
+    /** The verdict at a glance: green tick when READY, otherwise the first failing step. */
+    private void showVerdict(Report r) {
+        Color green = new JBColor(0x368746, 0x5FAD65);
+        Color red = new JBColor(0xC7222D, 0xE05555);
+        Color amber = new JBColor(0x9E6A03, 0xD9A343);
+        switch (r.verdict()) {
+            case READY -> style(AllIcons.General.InspectionsOK, green, "Ready — connected, client exists, authenticated");
+            case NOT_READY -> style(AllIcons.General.Warning, amber, "Not ready — " + r.firstFailure());
+            case NOT_CONNECTED -> style(AllIcons.General.Error, red, "Not connected — " + r.firstFailure());
+        }
+    }
+
+    private void style(Icon icon, Color color, String text) {
+        banner.setIcon(icon);
+        banner.setForeground(color);
+        // one line that ends in "…" when the dock is narrow (a wrapping label would not re-measure its height);
+        // the full text is in the tooltip and in the report below
+        banner.setText(text);
+        banner.setToolTipText(text);
+        banner.setVisible(true);
+    }
+
+    /** label on the left (all labels one width), field stretched across the rest of the row. */
+    private static JPanel labeled(String label, JComponent field, int labelWidth) {
+        JBLabel l = new JBLabel(label);
+        l.setPreferredSize(new Dimension(labelWidth, l.getPreferredSize().height));
+        JPanel row = new JPanel(new BorderLayout(6, 0));
+        row.add(l, BorderLayout.WEST);
+        row.add(field, BorderLayout.CENTER);
+        return row;
     }
 
     private static JButton button(String label, Runnable action) {
@@ -66,11 +120,16 @@ public final class P4Connect {
         String exe = exeField.getText().strip();
         String dir = dirField.getText().strip();
         service.configure(exe.isEmpty() ? "p4" : exe, dir); // every tab now uses exactly what is diagnosed
+        banner.setVisible(false);
         reportArea.setText("running diagnosis...");
         P4Cli cli = service.cli();
         service.background("Perforce: connection diagnosis", true, false, indicator -> {
             Report r = diagnose(cli);
-            service.ui(() -> reportArea.setText(r.text()));
+            service.ui(() -> {
+                reportArea.setText(r.text());
+                reportArea.setCaretPosition(0);
+                showVerdict(r);
+            });
         });
     }
 

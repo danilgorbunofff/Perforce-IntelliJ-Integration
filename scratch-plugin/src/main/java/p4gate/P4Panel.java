@@ -1,16 +1,36 @@
 package p4gate;
 
+import com.intellij.icons.AllIcons;
+import com.intellij.openapi.actionSystem.ActionManager;
+import com.intellij.openapi.actionSystem.ActionToolbar;
+import com.intellij.openapi.actionSystem.ActionUpdateThread;
+import com.intellij.openapi.actionSystem.AnAction;
+import com.intellij.openapi.actionSystem.AnActionEvent;
+import com.intellij.openapi.actionSystem.DefaultActionGroup;
 import com.intellij.openapi.fileEditor.FileEditorManager;
+import com.intellij.openapi.fileTypes.FileTypeManager;
 import com.intellij.openapi.progress.ProgressIndicator;
+import com.intellij.openapi.project.DumbAwareAction;
 import com.intellij.openapi.ui.Messages;
+import com.intellij.openapi.vcs.FileStatus;
 import com.intellij.openapi.vfs.VfsUtil;
 import com.intellij.openapi.vfs.VirtualFile;
+import com.intellij.ui.ColoredTreeCellRenderer;
+import com.intellij.ui.JBColor;
+import com.intellij.ui.OnePixelSplitter;
+import com.intellij.ui.PopupHandler;
+import com.intellij.ui.SimpleTextAttributes;
+import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.ui.table.JBTable;
 import com.intellij.ui.treeStructure.Tree;
+import com.intellij.util.ui.JBUI;
+import com.intellij.util.ui.UIUtil;
+import org.jetbrains.annotations.NotNull;
 
 import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.table.TableColumn;
 import javax.swing.table.TableRowSorter;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeModel;
@@ -33,15 +53,15 @@ import java.util.function.Consumer;
  *  exclusive per project; anything that can discard work names the files and asks first. */
 public final class P4Panel {
     private final P4Project service;
-    private final Tree tree = new Tree(new DefaultTreeModel(new DefaultMutableTreeNode("no data yet — press Refresh")));
+    private final Tree tree = new Tree(new DefaultTreeModel(new DefaultMutableTreeNode("No data yet — press Refresh")));
     private final DefaultTableModel submittedModel =
             new DefaultTableModel(new Object[]{"CL", "date", "user", "client", "description"}, 0) {
                 @Override public boolean isCellEditable(int r, int c) { return false; }
                 @Override public Class<?> getColumnClass(int c) { return c == 0 ? Long.class : String.class; }
             };
     private final JBTable submittedTable = new JBTable(submittedModel);
-    private final JLabel streamLabel = new JLabel(" ");
-    private final JTextArea status = new JTextArea(10, 70);
+    private final JBLabel streamLabel = new JBLabel(" ");
+    private final JTextArea status = new JTextArea(8, 70);
     private final AtomicLong generation = new AtomicLong(); // only the newest refresh may update the UI
 
     public P4Panel(P4Project service) {
@@ -50,54 +70,202 @@ public final class P4Panel {
 
     public JComponent root() {
         submittedTable.setRowSorter(new TableRowSorter<>(submittedModel)); // header click sorts (CL numeric)
-        JPanel changelistRow = row(
-                button("Refresh", this::refresh),
-                button("Submit…", this::submitSelected),
-                button("Shelve", this::shelveSelected),
-                button("Revert (keep files)", this::revertKeepSelected),
-                button("Revert (discard edits)…", this::revertDiscardSelected));
-        JPanel fileRow = row(
-                button("Edit current file", () -> openCurrentFile("edit")),
-                button("Add current file", () -> openCurrentFile("add")),
-                button("Diff", this::diffSelected),
-                button("Annotate", this::annotateSelected),
-                button("Ignore file…", this::ignoreSelected),
-                button("Accept theirs…", () -> resolveSelected("-at")),
-                button("Accept yours…", () -> resolveSelected("-ay")));
-        JPanel workspaceRow = row(
-                button("Sync + auto-merge", this::syncAutoMerge),
-                button("Reconcile…", this::reconcile),
-                button("p4 info", this::showInfo));
-        JPanel top = new JPanel();
-        top.setLayout(new BoxLayout(top, BoxLayout.Y_AXIS));
-        top.add(changelistRow);
-        top.add(fileRow);
-        top.add(workspaceRow);
+        submittedTable.setStriped(true);
+        submittedTable.setShowGrid(false);
+        int[] widths = {50, 125, 70, 120}; // CL, date, user, client: never truncated; the description takes the rest
+        for (int i = 0; i < widths.length; i++) {
+            TableColumn col = submittedTable.getColumnModel().getColumn(i);
+            col.setMinWidth(widths[i]);
+            col.setPreferredWidth(widths[i]);
+        }
+        submittedTable.getColumnModel().getColumn(4).setPreferredWidth(300);
+        tree.setCellRenderer(new NodeRenderer());
+        tree.setShowsRootHandles(true);
+        installContextMenu();
 
-        JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, new JBScrollPane(tree), new JBScrollPane(submittedTable));
-        split.setResizeWeight(0.6);
+        ActionToolbar toolbar = ActionManager.getInstance().createActionToolbar("P4Changelists", toolbarGroup(), true);
+        toolbar.setTargetComponent(tree);
+        toolbar.getComponent().setBorder(JBUI.Borders.customLine(JBColor.border(), 0, 0, 1, 0));
+
+        streamLabel.setForeground(UIUtil.getContextHelpForeground());
+        streamLabel.setBorder(JBUI.Borders.empty(3, 8));
+
+        status.setEditable(false);
+        status.setLineWrap(true); // long p4 lines wrap instead of running off the edge
+        status.setWrapStyleWord(true);
+        status.setFont(new Font(Font.MONOSPACED, Font.PLAIN, JBUI.Fonts.label().getSize()));
+        status.setBorder(JBUI.Borders.empty(4, 8));
+        JBScrollPane output = new JBScrollPane(status);
+        output.setBorder(JBUI.Borders.customLine(JBColor.border(), 1, 0, 0, 0));
+
+        JBScrollPane table = new JBScrollPane(submittedTable);
+        table.setBorder(JBUI.Borders.customLine(JBColor.border(), 1, 0, 0, 0));
+        OnePixelSplitter lower = new OnePixelSplitter(true, 0.5f);
+        lower.setFirstComponent(table);
+        lower.setSecondComponent(output);
+        OnePixelSplitter split = new OnePixelSplitter(true, 0.42f);
+        split.setFirstComponent(new JBScrollPane(tree));
+        split.setSecondComponent(lower);
+
+        JPanel header = new JPanel(new BorderLayout());
+        header.add(toolbar.getComponent(), BorderLayout.NORTH);
+        header.add(streamLabel, BorderLayout.SOUTH);
 
         JPanel panel = new JPanel(new BorderLayout());
-        panel.add(top, BorderLayout.NORTH);
+        panel.add(header, BorderLayout.NORTH);
         panel.add(split, BorderLayout.CENTER);
-        JPanel south = new JPanel(new BorderLayout());
-        south.add(streamLabel, BorderLayout.NORTH);
-        status.setEditable(false);
-        south.add(new JBScrollPane(status), BorderLayout.CENTER);
-        panel.add(south, BorderLayout.SOUTH);
         return panel;
     }
 
-    private static JPanel row(JButton... buttons) {
-        JPanel p = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        for (JButton b : buttons) p.add(b);
-        return p;
+    // ---------------------------------------------------------------- toolbar and menus
+
+    private static AnAction act(String text, String description, Icon icon, Runnable run) {
+        return new DumbAwareAction(text, description, icon) {
+            @Override
+            public void actionPerformed(@NotNull AnActionEvent e) {
+                run.run(); // EDT: bodies only read Swing state, ask the user, and queue background work
+            }
+
+            @Override
+            public @NotNull ActionUpdateThread getActionUpdateThread() {
+                return ActionUpdateThread.EDT;
+            }
+        };
     }
 
-    private static JButton button(String label, Runnable action) {
-        JButton b = new JButton(label);
-        b.addActionListener(e -> action.run()); // EDT: bodies only read Swing state, ask the user, and queue background work
-        return b;
+    private static DefaultActionGroup popup(String name, String description, Icon icon, AnAction... children) {
+        DefaultActionGroup g = new DefaultActionGroup(name, true);
+        g.getTemplatePresentation().setDescription(description);
+        g.getTemplatePresentation().setIcon(icon);
+        g.addAll(children);
+        return g;
+    }
+
+    private final AnAction submitAction = act("Submit…", "Submit the selected changelist to the server",
+            AllIcons.Actions.Commit, this::submitSelected);
+    private final AnAction shelveAction = act("Shelve", "Shelve the selected changelist's files on the server",
+            AllIcons.Vcs.ShelveSilent, this::shelveSelected);
+    private final AnAction revertKeepAction = act("Revert (keep files)", "Give the files back to Perforce but keep your edits on disk",
+            AllIcons.Actions.Undo, this::revertKeepSelected);
+    private final AnAction revertDiscardAction = act("Revert (discard edits)…", "Restore the depot revision and DISCARD your local edits",
+            AllIcons.Actions.Rollback, this::revertDiscardSelected);
+    private final AnAction diffAction = act("Diff", "Diff the selected file against the depot revision you have",
+            AllIcons.Actions.Diff, this::diffSelected);
+    private final AnAction annotateAction = act("Annotate", "Show who changed each line (p4 annotate)",
+            AllIcons.Actions.Annotate, this::annotateSelected);
+    private final AnAction acceptTheirsAction = act("Accept theirs…", "Resolve the selected file with the depot's version",
+            AllIcons.Vcs.Merge, () -> resolveSelected("-at"));
+    private final AnAction acceptYoursAction = act("Accept yours…", "Resolve the selected file keeping your version",
+            AllIcons.Vcs.Merge, () -> resolveSelected("-ay"));
+    private final AnAction ignoreAction = act("Ignore file…", "Stop adding the selected file and ignore it from now on",
+            AllIcons.Actions.Cancel, this::ignoreSelected);
+
+    DefaultActionGroup toolbarGroup() { // package-private: the UI test checks what the toolbar offers
+        // A toolbar button's tooltip shows only the action's text, so these names say what the icon does;
+        // the dropdowns and the right-click menu keep the short names the user guide documents.
+        DefaultActionGroup bar = new DefaultActionGroup();
+        bar.add(act("Refresh", "Reload the changelists and the submitted history", AllIcons.Actions.Refresh, this::refresh));
+        bar.addSeparator();
+        bar.add(act("Submit Changelist…", "Submit the selected changelist to the server", AllIcons.Actions.Commit, this::submitSelected));
+        bar.add(act("Shelve Changelist", "Shelve the selected changelist's files on the server", AllIcons.Vcs.ShelveSilent, this::shelveSelected));
+        bar.add(popup("Revert Changelist", "Revert the selected changelist", AllIcons.Actions.Rollback, revertKeepAction, revertDiscardAction));
+        bar.addSeparator();
+        bar.add(act("Diff Against Depot", "Diff the selected file against the depot revision you have", AllIcons.Actions.Diff, this::diffSelected));
+        bar.add(act("Annotate File", "Show who changed each line (p4 annotate)", AllIcons.Actions.Annotate, this::annotateSelected));
+        bar.add(popup("Resolve Conflict", "Resolve the selected conflicting file", AllIcons.Vcs.Merge,
+                acceptTheirsAction, acceptYoursAction));
+        bar.addSeparator();
+        bar.add(act("Sync + Auto-Merge", "Sync to the latest revisions and auto-merge (resolve -am); conflicts are left for you",
+                AllIcons.Actions.CheckOut, this::syncAutoMerge));
+        DefaultActionGroup more = popup("More Actions", "More Perforce actions", AllIcons.Actions.More,
+                act("Edit current file", "Open the file in the editor for edit (p4 edit)", AllIcons.Actions.Edit, () -> openCurrentFile("edit")),
+                act("Add current file", "Open the file in the editor for add (p4 add)", AllIcons.General.Add, () -> openCurrentFile("add")),
+                ignoreAction);
+        more.addSeparator();
+        more.add(act("Reconcile…", "Find edits, adds and deletes made outside Perforce and open them", AllIcons.Actions.Find, this::reconcile));
+        more.add(act("p4 info", "Show the server and client details", AllIcons.General.Information, this::showInfo));
+        bar.add(more);
+        return bar;
+    }
+
+    /** Right-click on a changelist or a file: only the actions that apply to what was clicked. */
+    private void installContextMenu() {
+        tree.addMouseListener(new PopupHandler() {
+            @Override
+            public void invokePopup(Component comp, int x, int y) {
+                TreePath path = tree.getPathForLocation(x, y);
+                if (path == null) return;
+                tree.setSelectionPath(path);
+                Object o = ((DefaultMutableTreeNode) path.getLastPathComponent()).getUserObject();
+                DefaultActionGroup g = new DefaultActionGroup();
+                if (o instanceof P4Data.Change c) {
+                    if (c.id() != 0) {
+                        g.add(submitAction);
+                        g.add(shelveAction);
+                        g.addSeparator();
+                    }
+                    g.add(revertKeepAction);
+                    g.add(revertDiscardAction);
+                } else if (o instanceof P4Data.OpenedFile) {
+                    g.add(diffAction);
+                    g.add(annotateAction);
+                    g.addSeparator();
+                    g.add(acceptTheirsAction);
+                    g.add(acceptYoursAction);
+                    g.addSeparator();
+                    g.add(ignoreAction);
+                } else {
+                    return;
+                }
+                ActionManager.getInstance().createActionPopupMenu("P4ChangelistsPopup", g).getComponent().show(comp, x, y);
+            }
+        });
+    }
+
+    /** Changelist rows: bold name, grey file count. File rows: file-type icon, name in the file-status colour
+     *  (add green, edit blue, delete red), grey directory and the p4 action. */
+    static final class NodeRenderer extends ColoredTreeCellRenderer {
+        @Override
+        public void customizeCellRenderer(@NotNull JTree tree, Object value, boolean selected, boolean expanded,
+                                          boolean leaf, int row, boolean hasFocus) {
+            Object o = ((DefaultMutableTreeNode) value).getUserObject();
+            if (o instanceof P4Data.Change c) {
+                setIcon(AllIcons.Vcs.Changelist);
+                append(c.id() == 0 ? "Default Changelist" : "Change " + c.id(), SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES);
+                if (c.id() != 0 && !c.desc().isBlank()) append("  " + c.desc());
+                int n = c.files().size();
+                append("  " + (n == 0 ? "empty" : n == 1 ? "1 file" : n + " files"), SimpleTextAttributes.GRAYED_ATTRIBUTES);
+            } else if (o instanceof P4Data.OpenedFile f) {
+                String depot = f.depotFile();
+                int slash = depot.lastIndexOf('/');
+                String name = depot.substring(slash + 1);
+                setIcon(FileTypeManager.getInstance().getFileTypeByFileName(name).getIcon());
+                append(name, new SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, statusColor(f.action())));
+                String dir = folderBelowDepot(depot);
+                if (!dir.isEmpty()) append("  " + dir, SimpleTextAttributes.GRAYED_ATTRIBUTES);
+                append("  " + f.action(), SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES);
+            } else {
+                append(String.valueOf(o), SimpleTextAttributes.REGULAR_ATTRIBUTES);
+            }
+        }
+
+        /** "//depot/sub dir/x.txt" -> "sub dir"; a file directly in the depot has no folder to show. */
+        static String folderBelowDepot(String depotFile) {
+            String path = depotFile.startsWith("//") ? depotFile.substring(2) : depotFile;
+            int first = path.indexOf('/');
+            int last = path.lastIndexOf('/');
+            return first < 0 || last <= first ? "" : path.substring(first + 1, last);
+        }
+
+        static Color statusColor(String action) {
+            FileStatus s = switch (action) {
+                case "add", "branch", "move/add" -> FileStatus.ADDED;
+                case "delete", "move/delete", "purge" -> FileStatus.DELETED;
+                case "edit", "integrate" -> FileStatus.MODIFIED;
+                default -> null;
+            };
+            return s == null ? null : s.getColor();
+        }
     }
 
     // ---------------------------------------------------------------- refresh
@@ -112,7 +280,7 @@ public final class P4Panel {
                         ? "cannot reach the server: " + info.error()
                         : "client '" + P4Data.requestedClient(cli, info) + "' does not exist on the server";
                 uiIfCurrent(gen, () -> {
-                    tree.setModel(new DefaultTreeModel(new DefaultMutableTreeNode("NOT READY — " + why)));
+                    tree.setModel(new DefaultTreeModel(new DefaultMutableTreeNode("Not ready — " + why)));
                     submittedModel.setRowCount(0);
                     streamLabel.setText(" ");
                     status.setText("Refresh failed: " + why + "\nOpen the Connection tab and press 'Save & run diagnosis'.");
@@ -144,8 +312,20 @@ public final class P4Panel {
 
     private void refreshTree(String client, P4Data.Listing<P4Data.Change> pending) {
         String label = pending.error() != null
-                ? "pending changelists of " + client + " — FAILED: " + pending.error()
-                : "pending changelists of " + client + " (" + (pending.items().size() - 1) + " numbered + default)";
+                ? "Pending changelists — FAILED: " + pending.error()
+                : "Pending changelists";
+        // an action refreshes the tree; keep what the user had open and selected instead of resetting it
+        java.util.Set<Long> expanded = new java.util.HashSet<>();
+        Object selected = selectedObject();
+        if (tree.getModel().getRoot() instanceof DefaultMutableTreeNode oldRoot) {
+            for (int i = 0; i < oldRoot.getChildCount(); i++) {
+                DefaultMutableTreeNode n = (DefaultMutableTreeNode) oldRoot.getChildAt(i);
+                if (n.getUserObject() instanceof P4Data.Change c
+                        && tree.isExpanded(new TreePath(n.getPath()))) {
+                    expanded.add(c.id());
+                }
+            }
+        }
         DefaultMutableTreeNode root = new DefaultMutableTreeNode(label);
         for (P4Data.Change c : pending.items()) {
             DefaultMutableTreeNode cn = new DefaultMutableTreeNode(c);
@@ -153,6 +333,22 @@ public final class P4Panel {
             root.add(cn);
         }
         tree.setModel(new DefaultTreeModel(root));
+        TreePath toSelect = null;
+        for (int i = 0; i < root.getChildCount(); i++) {
+            DefaultMutableTreeNode cn = (DefaultMutableTreeNode) root.getChildAt(i);
+            P4Data.Change c = (P4Data.Change) cn.getUserObject();
+            if (expanded.contains(c.id())) tree.expandPath(new TreePath(cn.getPath()));
+            if (selected instanceof P4Data.Change sc && sc.id() == c.id()) toSelect = new TreePath(cn.getPath());
+            for (int j = 0; j < cn.getChildCount(); j++) {
+                DefaultMutableTreeNode fn = (DefaultMutableTreeNode) cn.getChildAt(j);
+                if (selected instanceof P4Data.OpenedFile sf
+                        && fn.getUserObject() instanceof P4Data.OpenedFile f
+                        && f.depotFile().equals(sf.depotFile()) && f.change() == sf.change()) {
+                    toSelect = new TreePath(fn.getPath());
+                }
+            }
+        }
+        if (toSelect != null) tree.setSelectionPath(toSelect);
     }
 
     private void refreshIndex(List<P4Data.SubmittedChange> index) {
